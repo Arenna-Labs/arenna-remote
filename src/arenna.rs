@@ -1,8 +1,19 @@
 //! Arenna Remote integration glue: things that need the network or the
 //! platform layer. Pure logic lives in `hbb_common::arenna`.
 
-use hbb_common::{arenna, bail, ResultType};
-use std::path::Path;
+use hbb_common::{anyhow::anyhow, arenna, bail, ResultType};
+use std::{
+    io::Read,
+    path::{Path, PathBuf},
+    time::Duration,
+};
+
+/// Timeouts for the update channel. The installer download gets a generous
+/// one: reqwest's blocking client otherwise gives up after 30 s, which would
+/// make updates impossible on slow links.
+const CHECK_TIMEOUT: Duration = Duration::from_secs(30);
+const SIGNATURE_TIMEOUT: Duration = Duration::from_secs(60);
+const INSTALLER_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 
 fn user_agent() -> String {
     format!("{}/{}", arenna::APP_NAME, arenna::PRODUCT_VERSION)
@@ -20,6 +31,7 @@ pub async fn newer_release_page(
     let resp = client
         .head(latest_url)
         .header(reqwest::header::USER_AGENT, user_agent())
+        .timeout(CHECK_TIMEOUT)
         .send()
         .await?;
     let Some(version) = arenna::version_from_release_url(resp.url().as_str()) else {
@@ -28,34 +40,137 @@ pub async fn newer_release_page(
     Ok(arenna::is_newer(&version, current).then(|| arenna::release_page_url(&version)))
 }
 
-/// Refuses a downloaded installer unless `<download_url>.sig` is a valid
-/// signature of it by the release pipeline. The installer runs elevated (as
-/// SYSTEM for automatic updates), so nothing else is trusted: not the TLS
-/// connection (upstream's HTTP client may accept invalid certificates) nor
-/// the file name.
-#[cfg(windows)]
-pub fn verify_downloaded_update(path: &Path, download_url: &str) -> ResultType<()> {
-    verify_downloaded_update_with_key(path, download_url, arenna::UPDATE_PUBLIC_KEY)
+fn asset_name(download_url: &str) -> ResultType<String> {
+    download_url
+        .rsplit('/')
+        .next()
+        .filter(|name| !name.is_empty())
+        .map(str::to_owned)
+        .ok_or_else(|| anyhow!("no file name in {download_url}"))
+}
+
+fn get(
+    client: &reqwest::blocking::Client,
+    url: &str,
+    timeout: Duration,
+) -> ResultType<reqwest::blocking::Response> {
+    let resp = client
+        .get(url)
+        .header(reqwest::header::USER_AGENT, user_agent())
+        .timeout(timeout)
+        .send()?;
+    if !resp.status().is_success() {
+        bail!("cannot download {}: {}", url, resp.status());
+    }
+    Ok(resp)
+}
+
+/// Downloads an update installer and its `.sig` and verifies them in memory:
+/// nothing is written to disk before the signature checks out. The
+/// installer then runs elevated (as SYSTEM for automatic updates), so the
+/// signature is the only thing trusted: not the TLS connection (upstream's
+/// HTTP client may fall back to accepting invalid certificates) nor any file
+/// left behind by an earlier run.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn download_verified_update(download_url: &str) -> ResultType<Vec<u8>> {
+    download_verified_update_with_keys(download_url, arenna::UPDATE_PUBLIC_KEYS)
 }
 
 #[cfg_attr(not(windows), allow(dead_code))]
-fn verify_downloaded_update_with_key(
+fn download_verified_update_with_keys(download_url: &str, public_keys: &[&str]) -> ResultType<Vec<u8>> {
+    let asset = asset_name(download_url)?;
+    let client = crate::hbbs_http::create_http_client_with_url(download_url);
+    // The signature first: without one there is no point downloading.
+    let signature = get(&client, &format!("{download_url}.sig"), SIGNATURE_TIMEOUT)?.text()?;
+    let data = get(&client, download_url, INSTALLER_TIMEOUT)?.bytes()?.to_vec();
+    arenna::verify_update_signature(&asset, &data, &signature, public_keys)?;
+    Ok(data)
+}
+
+/// A verified installer on disk. While this value lives, the file is open
+/// without write or delete sharing, so it cannot be replaced before the
+/// process that runs it has started.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub struct VerifiedUpdate {
+    pub path: PathBuf,
+    _lock: std::fs::File,
+}
+
+/// Stores a verified installer in `<install dir>\update` (inherits the
+/// Program Files ACL: only administrators and SYSTEM can write there).
+#[cfg(windows)]
+pub fn save_verified_update(asset: &str, data: &[u8]) -> ResultType<VerifiedUpdate> {
+    let exe = std::env::current_exe()?;
+    let dir = exe
+        .parent()
+        .ok_or_else(|| anyhow!("no parent directory for {}", exe.display()))?
+        .join("update");
+    save_update_to(&dir, asset, data)
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+fn save_update_to(dir: &Path, asset: &str, data: &[u8]) -> ResultType<VerifiedUpdate> {
+    std::fs::create_dir_all(dir)?;
+    // Keep only the latest download; files still in use are left alone.
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            std::fs::remove_file(entry.path()).ok();
+        }
+    }
+    let path = dir.join(asset);
+    std::fs::write(&path, data)?;
+    let mut lock = open_locked(&path)?;
+    // Compare through the handle that now blocks writers: what gets started
+    // is exactly what was verified.
+    let mut on_disk = Vec::with_capacity(data.len());
+    lock.read_to_end(&mut on_disk)?;
+    if on_disk != data {
+        bail!("{} changed on disk after verification", path.display());
+    }
+    Ok(VerifiedUpdate { path, _lock: lock })
+}
+
+#[cfg(windows)]
+fn open_locked(path: &Path) -> std::io::Result<std::fs::File> {
+    use std::os::windows::fs::OpenOptionsExt;
+    const FILE_SHARE_READ: u32 = 0x0000_0001;
+    std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ)
+        .open(path)
+}
+
+#[cfg(not(windows))]
+fn open_locked(path: &Path) -> std::io::Result<std::fs::File> {
+    std::fs::File::open(path)
+}
+
+/// Command line that runs a downloaded installer in update mode. The path is
+/// quoted: it lives under "C:\Program Files", and CreateProcess with an
+/// unquoted path would first try to run "C:\Program.exe".
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn update_command_line(installer: &Path) -> String {
+    format!("\"{}\" --update", installer.display())
+}
+
+/// Checks an installer downloaded by the UI (manual update, run through a
+/// UAC prompt by the same user) against `<download_url>.sig`.
+#[cfg(windows)]
+pub fn verify_downloaded_update(path: &Path, download_url: &str) -> ResultType<()> {
+    verify_downloaded_update_with_keys(path, download_url, arenna::UPDATE_PUBLIC_KEYS)
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+fn verify_downloaded_update_with_keys(
     path: &Path,
     download_url: &str,
-    public_key: &str,
+    public_keys: &[&str],
 ) -> ResultType<()> {
-    let sig_url = format!("{download_url}.sig");
-    let client = crate::hbbs_http::create_http_client_with_url(&sig_url);
-    let resp = client
-        .get(&sig_url)
-        .header(reqwest::header::USER_AGENT, user_agent())
-        .send()?;
-    if !resp.status().is_success() {
-        bail!("cannot download {}: {}", sig_url, resp.status());
-    }
-    let signature = resp.text()?;
+    let asset = asset_name(download_url)?;
+    let client = crate::hbbs_http::create_http_client_with_url(download_url);
+    let signature = get(&client, &format!("{download_url}.sig"), SIGNATURE_TIMEOUT)?.text()?;
     let data = std::fs::read(path)?;
-    arenna::verify_update_signature(&data, &signature, public_key)
+    arenna::verify_update_signature(&asset, &data, &signature, public_keys)
 }
 
 #[cfg(test)]
@@ -175,51 +290,107 @@ mod tests {
         assert_eq!(found, None);
     }
 
-    fn signed_file(content: &[u8]) -> (std::path::PathBuf, String, String) {
-        use hbb_common::sodiumoxide::{
-            base64::{encode, Variant},
-            crypto::sign,
-        };
+    const ASSET: &str = "arenna-remote-9.9.9-x86_64.exe";
+
+    fn keypair() -> (String, hbb_common::sodiumoxide::crypto::sign::SecretKey) {
+        use hbb_common::sodiumoxide::{base64::{encode, Variant}, crypto::sign};
         let (pk, sk) = sign::gen_keypair();
-        let sig = sign::sign_detached(content, &sk);
-        let path = std::env::temp_dir().join(format!(
-            "arenna-remote-test-{}-{}.exe",
+        (encode(pk.0, Variant::Original), sk)
+    }
+
+    fn sig_line(data: &[u8], sk: &hbb_common::sodiumoxide::crypto::sign::SecretKey) -> String {
+        use hbb_common::sodiumoxide::{base64::{encode, Variant}, crypto::sign};
+        let message = hbb_common::arenna::signed_message(ASSET, data);
+        encode(sign::sign_detached(&message, sk).to_bytes(), Variant::Original)
+    }
+
+    fn temp_file(content: &[u8]) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "arenna-test-{}-{}",
             std::process::id(),
             hbb_common::rand::random::<u32>()
         ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(ASSET);
         std::fs::write(&path, content).unwrap();
-        (
-            path,
-            encode(sig.to_bytes(), Variant::Original),
-            encode(pk.0, Variant::Original),
-        )
+        path
+    }
+
+    fn ok_bytes(body: &[u8]) -> String {
+        // Test payloads are ASCII.
+        ok(std::str::from_utf8(body).unwrap())
     }
 
     #[test]
-    fn accepts_a_download_whose_signature_matches() {
-        let (path, sig, pk) = signed_file(b"installer");
-        let base = serve(vec![("/v1/a.exe.sig", ok(&format!("{sig}\n")))]);
-        let res = super::verify_downloaded_update_with_key(&path, &format!("{base}/v1/a.exe"), &pk);
-        std::fs::remove_file(&path).ok();
+    fn downloads_and_verifies_an_update_in_memory() {
+        let (pk, sk) = keypair();
+        let base = serve(vec![
+            ("/v9/arenna-remote-9.9.9-x86_64.exe", ok_bytes(b"installer")),
+            ("/v9/arenna-remote-9.9.9-x86_64.exe.sig", ok(&format!("{}\n", sig_line(b"installer", &sk)))),
+        ]);
+        let url = format!("{base}/v9/{ASSET}");
+        let data = super::download_verified_update_with_keys(&url, &[&pk]).unwrap();
+        assert_eq!(data, b"installer");
+    }
+
+    #[test]
+    fn rejects_a_tampered_update_download() {
+        let (pk, sk) = keypair();
+        let base = serve(vec![
+            ("/v9/arenna-remote-9.9.9-x86_64.exe", ok_bytes(b"installer + malware")),
+            ("/v9/arenna-remote-9.9.9-x86_64.exe.sig", ok(&sig_line(b"installer", &sk))),
+        ]);
+        let url = format!("{base}/v9/{ASSET}");
+        assert!(super::download_verified_update_with_keys(&url, &[&pk]).is_err());
+    }
+
+    #[test]
+    fn rejects_an_update_without_signature() {
+        let (pk, _) = keypair();
+        let base = serve(vec![("/v9/arenna-remote-9.9.9-x86_64.exe", ok_bytes(b"installer"))]);
+        let url = format!("{base}/v9/{ASSET}");
+        assert!(super::download_verified_update_with_keys(&url, &[&pk]).is_err());
+    }
+
+    #[test]
+    fn update_command_line_quotes_the_installer_path() {
+        let path = std::path::Path::new(r"C:\Program Files\ArennaRemote\update\arenna-remote-9.9.9-x86_64.exe");
+        assert_eq!(
+            super::update_command_line(path),
+            r#""C:\Program Files\ArennaRemote\update\arenna-remote-9.9.9-x86_64.exe" --update"#
+        );
+    }
+
+    #[test]
+    fn saves_the_verified_update_replacing_older_downloads() {
+        let dir = temp_file(b"").parent().unwrap().join("update");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("arenna-remote-9.9.8-x86_64.exe"), b"old").unwrap();
+        let saved = super::save_update_to(&dir, ASSET, b"verified installer").unwrap();
+        assert_eq!(saved.path, dir.join(ASSET));
+        assert_eq!(std::fs::read(&saved.path).unwrap(), b"verified installer");
+        assert!(!dir.join("arenna-remote-9.9.8-x86_64.exe").exists());
+        drop(saved);
+        std::fs::remove_dir_all(dir.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn accepts_a_manual_download_whose_signature_matches() {
+        let (pk, sk) = keypair();
+        let path = temp_file(b"installer");
+        let base = serve(vec![("/v9/arenna-remote-9.9.9-x86_64.exe.sig", ok(&sig_line(b"installer", &sk)))]);
+        let res = super::verify_downloaded_update_with_keys(&path, &format!("{base}/v9/{ASSET}"), &[&pk]);
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
         assert!(res.is_ok(), "{res:?}");
     }
 
     #[test]
-    fn rejects_a_download_that_was_tampered_with() {
-        let (path, sig, pk) = signed_file(b"installer");
-        std::fs::write(&path, b"installer + malware").unwrap();
-        let base = serve(vec![("/v1/a.exe.sig", ok(&sig))]);
-        let res = super::verify_downloaded_update_with_key(&path, &format!("{base}/v1/a.exe"), &pk);
-        std::fs::remove_file(&path).ok();
-        assert!(res.is_err());
-    }
-
-    #[test]
-    fn rejects_a_download_without_signature() {
-        let (path, _sig, pk) = signed_file(b"installer");
-        let base = serve(vec![]);
-        let res = super::verify_downloaded_update_with_key(&path, &format!("{base}/v1/a.exe"), &pk);
-        std::fs::remove_file(&path).ok();
+    fn rejects_a_manual_download_that_was_tampered_with() {
+        let (pk, sk) = keypair();
+        let path = temp_file(b"installer + malware");
+        let base = serve(vec![("/v9/arenna-remote-9.9.9-x86_64.exe.sig", ok(&sig_line(b"installer", &sk)))]);
+        let res = super::verify_downloaded_update_with_keys(&path, &format!("{base}/v9/{ASSET}"), &[&pk]);
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
         assert!(res.is_err());
     }
 }

@@ -1,7 +1,6 @@
-use crate::{common::do_check_software_update, hbbs_http::create_http_client_with_url};
+use crate::common::do_check_software_update;
 use hbb_common::{bail, config, log, ResultType};
 use std::{
-    io::Write,
     path::PathBuf,
     sync::{
         atomic::{AtomicUsize, Ordering},
@@ -123,86 +122,42 @@ fn check_update(manually: bool) -> ResultType<()> {
     if !(manually || config::Config::get_bool_option(config::keys::OPTION_ALLOW_AUTO_UPDATE)) {
         return Ok(());
     }
-    if do_check_software_update().is_err() {
-        // ignore
-        return Ok(());
+    if let Err(e) = do_check_software_update() {
+        // Arenna Remote: report it so the caller retries sooner (offline at
+        // boot, GitHub unreachable, ...).
+        bail!("Failed to check for updates: {}", e);
     }
 
     let update_url = crate::common::SOFTWARE_UPDATE_URL.lock().unwrap().clone();
     if update_url.is_empty() {
         log::debug!("No update available.");
-    } else {
-        // Arenna Remote: the installer attached to our GitHub release, e.g.
-        // .../releases/download/v1.2.3/arenna-remote-1.2.3-x86_64.exe
-        let Some(version) = hbb_common::arenna::version_from_release_url(&update_url) else {
-            bail!("Unexpected release URL: {}", update_url);
+        return Ok(());
+    }
+    // Arenna Remote: the installer attached to our GitHub release, e.g.
+    // .../releases/download/v1.2.3/arenna-remote-1.2.3-x86_64.exe
+    let Some(version) = hbb_common::arenna::version_from_release_url(&update_url) else {
+        bail!("Unexpected release URL: {}", update_url);
+    };
+    log::debug!("New version available: {}", &version);
+    #[cfg(target_os = "windows")]
+    {
+        let Some(arch) = crate::platform::windows::release_arch_suffix() else {
+            bail!(
+                "Unsupported Windows release architecture: {}",
+                std::env::consts::ARCH
+            );
         };
-        #[cfg(target_os = "windows")]
-        let download_url = {
-            let Some(arch) = crate::platform::windows::release_arch_suffix() else {
-                bail!(
-                    "Unsupported Windows release architecture: {}",
-                    std::env::consts::ARCH
-                );
-            };
-            hbb_common::arenna::release_download_url(
-                &version,
-                &hbb_common::arenna::windows_asset_name(&version, arch),
-            )
-        };
-        #[cfg(not(target_os = "windows"))]
-        let download_url = update_url.replace("tag", "download");
-        log::debug!("New version available: {}", &version);
-        let client = create_http_client_with_url(&download_url);
-        let Some(file_path) = get_download_file_from_url(&download_url) else {
-            bail!("Failed to get the file path from the URL: {}", download_url);
-        };
-        let mut is_file_exists = false;
-        if file_path.exists() {
-            // Check if the file size is the same as the server file size
-            // If the file size is the same, we don't need to download it again.
-            let file_size = std::fs::metadata(&file_path)?.len();
-            let response = client.head(&download_url).send()?;
-            if !response.status().is_success() {
-                bail!("Failed to get the file size: {}", response.status());
-            }
-            let total_size = response
-                .headers()
-                .get(reqwest::header::CONTENT_LENGTH)
-                .and_then(|ct_len| ct_len.to_str().ok())
-                .and_then(|ct_len| ct_len.parse::<u64>().ok());
-            let Some(total_size) = total_size else {
-                bail!("Failed to get content length");
-            };
-            if file_size == total_size {
-                is_file_exists = true;
-            } else {
-                std::fs::remove_file(&file_path)?;
-            }
-        }
-        if !is_file_exists {
-            let response = client.get(&download_url).send()?;
-            if !response.status().is_success() {
-                bail!(
-                    "Failed to download the new version file: {}",
-                    response.status()
-                );
-            }
-            let file_data = response.bytes()?;
-            let mut file = std::fs::File::create(&file_path)?;
-            file.write_all(&file_data)?;
-        }
-        #[cfg(target_os = "windows")]
-        if let Err(e) = crate::arenna::verify_downloaded_update(&file_path, &download_url) {
-            std::fs::remove_file(&file_path).ok();
-            bail!("Rejected update {}: {}", download_url, e);
-        }
+        let asset = hbb_common::arenna::windows_asset_name(&version, arch);
+        let download_url = hbb_common::arenna::release_download_url(&version, &asset);
+        // Download and verify in memory, then store the installer where only
+        // administrators can write, locked until it has been started. Nothing
+        // left on disk by an earlier run is reused.
+        let data = crate::arenna::download_verified_update(&download_url)
+            .map_err(|e| hbb_common::anyhow::anyhow!("Rejected update {}: {}", download_url, e))?;
+        let update = crate::arenna::save_verified_update(&asset, &data)?;
         // We have checked if the `conns` is empty before, but we need to check again.
-        // No need to care about the downloaded file here, because it's rare case that the `conns` are empty
-        // before the download, but not empty after the download.
         if has_no_active_conns() {
-            #[cfg(target_os = "windows")]
-            update_new_version(update_msi, &version, &file_path);
+            update_new_version(update_msi, &version, &update.path);
         }
     }
     Ok(())
@@ -255,7 +210,7 @@ fn update_new_version(update_msi: bool, version: &str, file_path: &PathBuf) {
                 };
                 let update_launched = match crate::platform::launch_privileged_process(
                     session_id,
-                    &format!("{} --update", p),
+                    &crate::arenna::update_command_line(file_path),
                 ) {
                     Ok(h) => {
                         if h.is_null() {
@@ -296,6 +251,8 @@ fn update_new_version(update_msi: bool, version: &str, file_path: &PathBuf) {
     }
 }
 
+// Used by the manual update (flutter_ffi) on Windows and macOS.
+#[cfg_attr(not(any(target_os = "windows", target_os = "macos")), allow(dead_code))]
 pub fn get_download_file_from_url(url: &str) -> Option<PathBuf> {
     let filename = url.split('/').last()?;
     Some(std::env::temp_dir().join(filename))
