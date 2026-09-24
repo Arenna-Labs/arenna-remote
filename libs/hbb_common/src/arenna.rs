@@ -21,9 +21,11 @@ pub const SERVER_HOST: &str = "rustdesk.arenna38.com";
 /// Base64 of the server's `id_ed25519.pub`.
 pub const SERVER_PUBLIC_KEY: &str = "7c6bMZlmhqyWFvA3sFQDtQKQr29M+Z2CsjbYMLJdQ8g=";
 
-/// Ed25519 public key that verifies the `.sig` of every Windows update.
-/// The private half is the `UPDATE_SIGNING_KEY` GitHub Actions secret.
-pub const UPDATE_PUBLIC_KEY: &str = "qFMXX9S2xKnWwR8CwFS8cFXvR7SaiV3vQc1rBewKcZE=";
+/// Ed25519 public keys trusted to sign Windows updates (`<asset>.sig`). The
+/// private halves live in the `UPDATE_SIGNING_KEY` GitHub Actions secret.
+/// To rotate: add the new key here and sign releases with both keys until
+/// every client runs a version that trusts the new one.
+pub const UPDATE_PUBLIC_KEYS: &[&str] = &["qFMXX9S2xKnWwR8CwFS8cFXvR7SaiV3vQc1rBewKcZE="];
 
 /// Product version (`X.Y.Z` from the release tag), injected by CI through the
 /// `ARENNA_VERSION` environment variable. Unlike `crate::VERSION` (the
@@ -120,20 +122,50 @@ pub fn is_newer(candidate: &str, current: &str) -> bool {
     crate::get_version_number(candidate) > crate::get_version_number(current)
 }
 
-/// Checks a detached Ed25519 signature (base64) of `data`.
-pub fn verify_update_signature(data: &[u8], sig_b64: &str, pk_b64: &str) -> crate::ResultType<()> {
+/// Bytes covered by an update signature: the asset file name, a newline,
+/// then the file. The name carries the version, so an older signed
+/// installer cannot be passed off as a newer one.
+pub fn signed_message(asset_name: &str, data: &[u8]) -> Vec<u8> {
+    let mut message = Vec::with_capacity(asset_name.len() + 1 + data.len());
+    message.extend_from_slice(asset_name.as_bytes());
+    message.push(b'\n');
+    message.extend_from_slice(data);
+    message
+}
+
+/// Checks `sig_file` (one base64 Ed25519 signature per line; several during
+/// a key rotation) for the asset `asset_name` with content `data`. Valid if
+/// any line verifies with any of `public_keys`.
+pub fn verify_update_signature(
+    asset_name: &str,
+    data: &[u8],
+    sig_file: &str,
+    public_keys: &[&str],
+) -> crate::ResultType<()> {
     use sodiumoxide::base64::{decode, Variant};
     use sodiumoxide::crypto::sign;
 
-    let sig = decode(sig_b64.trim(), Variant::Original)
-        .map_err(|_| anyhow::anyhow!("update signature is not valid base64"))?;
-    let sig = sign::Signature::from_bytes(&sig)
-        .map_err(|_| anyhow::anyhow!("update signature has the wrong length"))?;
-    let pk = decode(pk_b64.trim(), Variant::Original)
-        .map_err(|_| anyhow::anyhow!("update public key is not valid base64"))?;
-    let pk = sign::PublicKey::from_slice(&pk)
-        .ok_or_else(|| anyhow::anyhow!("update public key has the wrong length"))?;
-    if !sign::verify_detached(&sig, data, &pk) {
+    let keys: Vec<sign::PublicKey> = public_keys
+        .iter()
+        .filter_map(|k| decode(k.trim(), Variant::Original).ok())
+        .filter_map(|raw| sign::PublicKey::from_slice(&raw))
+        .collect();
+    let signatures: Vec<sign::Signature> = sig_file
+        .split_whitespace()
+        .filter_map(|line| decode(line, Variant::Original).ok())
+        .filter_map(|raw| sign::Signature::from_bytes(&raw).ok())
+        .collect();
+    if keys.is_empty() {
+        crate::bail!("no valid update public key");
+    }
+    if signatures.is_empty() {
+        crate::bail!("no valid signature in the .sig file");
+    }
+    let message = signed_message(asset_name, data);
+    let valid = signatures
+        .iter()
+        .any(|sig| keys.iter().any(|pk| sign::verify_detached(sig, &message, pk)));
+    if !valid {
         crate::bail!("update signature does not match");
     }
     Ok(())
@@ -237,42 +269,94 @@ mod tests {
         assert!(!is_update_file_name("arenna-remote-notes.txt"));
     }
 
-    #[test]
-    fn verifies_update_signatures() {
+    fn test_key() -> (String, sodiumoxide::crypto::sign::SecretKey) {
         use sodiumoxide::base64::{encode, Variant};
-        use sodiumoxide::crypto::sign;
-        let (pk, sk) = sign::gen_keypair();
-        let data = b"installer bytes";
-        let sig = sign::sign_detached(data, &sk);
-        let pk_b64 = encode(pk.0, Variant::Original);
-        let sig_b64 = encode(sig.to_bytes(), Variant::Original);
+        let (pk, sk) = sodiumoxide::crypto::sign::gen_keypair();
+        (encode(pk.0, Variant::Original), sk)
+    }
 
-        assert!(verify_update_signature(data, &sig_b64, &pk_b64).is_ok());
+    fn sign_line(asset: &str, data: &[u8], sk: &sodiumoxide::crypto::sign::SecretKey) -> String {
+        use sodiumoxide::base64::{encode, Variant};
+        let sig = sodiumoxide::crypto::sign::sign_detached(&signed_message(asset, data), sk);
+        encode(sig.to_bytes(), Variant::Original)
+    }
+
+    const ASSET: &str = "arenna-remote-1.2.3-x86_64.exe";
+
+    #[test]
+    fn accepts_a_valid_signature() {
+        let (pk, sk) = test_key();
+        let sig = sign_line(ASSET, b"installer", &sk);
+        assert!(verify_update_signature(ASSET, b"installer", &sig, &[&pk]).is_ok());
         // Trailing newline as written by .github/scripts/sign_update.py.
-        assert!(verify_update_signature(data, &format!("{sig_b64}\n"), &pk_b64).is_ok());
-        assert!(verify_update_signature(b"tampered", &sig_b64, &pk_b64).is_err());
-        assert!(verify_update_signature(data, "", &pk_b64).is_err());
-        assert!(verify_update_signature(data, "not base64!", &pk_b64).is_err());
-        assert!(verify_update_signature(data, &pk_b64, &pk_b64).is_err());
-        let (other_pk, _) = sign::gen_keypair();
-        let other_b64 = encode(other_pk.0, Variant::Original);
-        assert!(verify_update_signature(data, &sig_b64, &other_b64).is_err());
+        let sig_file = format!("{sig}\n");
+        assert!(verify_update_signature(ASSET, b"installer", &sig_file, &[&pk]).is_ok());
     }
 
     #[test]
-    fn update_public_key_is_a_valid_ed25519_key() {
+    fn rejects_tampered_data_other_keys_and_garbage() {
+        let (pk, sk) = test_key();
+        let (other_pk, _) = test_key();
+        let sig = sign_line(ASSET, b"installer", &sk);
+        assert!(verify_update_signature(ASSET, b"tampered", &sig, &[&pk]).is_err());
+        assert!(verify_update_signature(ASSET, b"installer", &sig, &[&other_pk]).is_err());
+        assert!(verify_update_signature(ASSET, b"installer", &sig, &[]).is_err());
+        assert!(verify_update_signature(ASSET, b"installer", "", &[&pk]).is_err());
+        assert!(verify_update_signature(ASSET, b"installer", "not base64!", &[&pk]).is_err());
+        assert!(verify_update_signature(ASSET, b"installer", &pk, &[&pk]).is_err());
+    }
+
+    #[test]
+    fn signature_is_bound_to_the_asset_name() {
+        // An older signed installer must not be accepted under a newer name.
+        let (pk, sk) = test_key();
+        let old = sign_line("arenna-remote-1.0.0-x86_64.exe", b"old installer", &sk);
+        assert!(verify_update_signature(ASSET, b"old installer", &old, &[&pk]).is_err());
+        // A plain signature over the bytes alone is not enough either.
+        use sodiumoxide::base64::{encode, Variant};
+        let bare = sodiumoxide::crypto::sign::sign_detached(b"installer", &sk);
+        let bare = encode(bare.to_bytes(), Variant::Original);
+        assert!(verify_update_signature(ASSET, b"installer", &bare, &[&pk]).is_err());
+    }
+
+    #[test]
+    fn supports_key_rotation_with_several_lines_and_keys() {
+        let (old_pk, old_sk) = test_key();
+        let (new_pk, new_sk) = test_key();
+        let both = format!(
+            "{}\n{}\n",
+            sign_line(ASSET, b"installer", &old_sk),
+            sign_line(ASSET, b"installer", &new_sk)
+        );
+        // Old clients (old key only) and new clients (new key only) accept it.
+        assert!(verify_update_signature(ASSET, b"installer", &both, &[&old_pk]).is_ok());
+        assert!(verify_update_signature(ASSET, b"installer", &both, &[&new_pk]).is_ok());
+        // A garbage line does not prevent a later valid one from matching.
+        let noisy = format!("garbage\n{}", sign_line(ASSET, b"installer", &new_sk));
+        assert!(verify_update_signature(ASSET, b"installer", &noisy, &[&old_pk, &new_pk]).is_ok());
+    }
+
+    #[test]
+    fn update_public_keys_are_valid_ed25519_keys() {
         use sodiumoxide::base64::{decode, Variant};
-        let raw = decode(UPDATE_PUBLIC_KEY, Variant::Original).unwrap();
-        assert!(sodiumoxide::crypto::sign::PublicKey::from_slice(&raw).is_some());
+        assert!(!UPDATE_PUBLIC_KEYS.is_empty());
+        for key in UPDATE_PUBLIC_KEYS {
+            let raw = decode(key, Variant::Original).unwrap();
+            assert!(sodiumoxide::crypto::sign::PublicKey::from_slice(&raw).is_some());
+        }
     }
 
     #[test]
     fn accepts_signatures_made_by_the_ci_signing_script() {
-        // Produced by .github/scripts/sign_update.py (Python `cryptography`)
-        // with the test-only seed 00 01 02 .. 1f over b"Arenna Remote update".
-        let pk = "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=";
-        let sig = "jaOXeyvvXSV5iIJVJtaGKuN9mdVpiRd1ue/7JVghgO1nwlmkPpmaptpFF388fkNU/G1yL5FnVGWQai3/zm+cAg==";
-        assert!(verify_update_signature(b"Arenna Remote update", sig, pk).is_ok());
-        assert!(verify_update_signature(b"Arenna Remote update!", sig, pk).is_err());
+        // .github/scripts/sign_update.py (Python `cryptography`) with the
+        // test-only seeds 00..1f and 20..3f, file arenna-remote-1.2.3-x86_64.exe
+        // containing b"Arenna Remote update".
+        let key1 = "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=";
+        let key2 = "Kay64UG8yvCyLhqU000LxzYeUm0L/hLIl5S8kyKWbdc=";
+        let sig_file = "aygNdkF1VMZWNbEEWNA2v0SCdmxcXByE+haaZ+UKWyvOxxvRhNKeuJptf5AHl58tBY019AVj29CZjSxsi2QqDA==\nG2Y3MIHqg+UfMLqQbIJo3+awjxLb6gwQFL+QKye2Skt7iJAnb3AwnSGSNy1X9aXmIFERLbW4gQq6c9MG23GRCw==\n";
+        let data = b"Arenna Remote update";
+        assert!(verify_update_signature(ASSET, data, sig_file, &[key1]).is_ok());
+        assert!(verify_update_signature(ASSET, data, sig_file, &[key2]).is_ok());
+        assert!(verify_update_signature(ASSET, b"Arenna Remote update!", sig_file, &[key1, key2]).is_err());
     }
 }
