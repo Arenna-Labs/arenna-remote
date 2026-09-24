@@ -2041,7 +2041,10 @@ pub fn create_symmetric_key_msg(their_pk_b: [u8; 32]) -> (Bytes, Bytes, secretbo
 
 #[inline]
 pub fn using_public_server() -> bool {
-    crate::get_custom_rendezvous_server(get_option("custom-rendezvous-server")).is_empty()
+    // Arenna Remote: the compiled-in default is our own server, so only a
+    // custom server pointing at RustDesk's infrastructure counts as public.
+    let custom = crate::get_custom_rendezvous_server(get_option("custom-rendezvous-server"));
+    !custom.is_empty() && is_public(&custom)
 }
 
 pub struct ThrottledInterval {

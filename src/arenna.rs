@@ -86,6 +86,13 @@ mod tests {
     }
 
     #[test]
+    fn the_default_server_is_not_rustdesks_public_server() {
+        // Upstream shows "set up your own server" tips and applies public
+        // server limits when this is true.
+        assert!(!crate::common::using_public_server());
+    }
+
+    #[test]
     fn never_talks_to_an_api_server() {
         assert_eq!(crate::common::get_api_server(String::new(), String::new()), "");
     }
