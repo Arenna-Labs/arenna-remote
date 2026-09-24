@@ -1681,12 +1681,11 @@ copy /Y \"{tmp_path}\\{display_name} Tray.lnk\" \"%PROGRAMDATA%\\Microsoft\\Wind
 ")
     };
 
+    // Arenna Remote: never uninstall the (shared) printer driver on install.
     let install_remote_printer = if install_printer {
         // No need to use `|| true` here.
         // The script will not exit even if `--install-remote-printer` panics.
         format!("\"{}\" --install-remote-printer", &src_exe)
-    } else if is_win_10_or_greater() {
-        format!("\"{}\" --uninstall-remote-printer", &src_exe)
     } else {
         "".to_owned()
     };
@@ -1792,30 +1791,39 @@ fn get_before_uninstall(kill_self: bool) -> String {
 /// The `uninstall_printer` parameter determines whether the command to uninstall the remote printer
 /// is included in the generated uninstall script. If `uninstall_printer` is `false`, the printer
 /// related command is omitted from the script.
-fn get_uninstall(kill_self: bool, uninstall_printer: bool) -> String {
+/// Arenna Remote: the printer driver ("RustDesk v4 Printer Driver") and the
+/// Amyuni virtual display devices are shared with an official RustDesk
+/// installed on the same PC. We never install the printer, and the virtual
+/// display is only removed on a real uninstall when no RustDesk is present,
+/// so installing or removing Arenna Remote never breaks RustDesk.
+fn is_official_rustdesk_installed() -> bool {
+    let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
+    hklm.open_subkey("SYSTEM\\CurrentControlSet\\Services\\RustDesk").is_ok()
+        || hklm
+            .open_subkey("SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\RustDesk")
+            .is_ok()
+}
+
+/// `is_uninstall`: false when called to clean up before (re)installing.
+fn get_uninstall(kill_self: bool, is_uninstall: bool) -> String {
     let reg_uninstall_string = get_reg("UninstallString");
     if reg_uninstall_string.to_lowercase().contains("msiexec.exe") {
         return reg_uninstall_string;
     }
 
-    // Arenna Remote: upstream also runs `--uninstall-cert` here, which deletes
-    // the RustDesk IDD driver test certificates machine-wide. We never
-    // install them and must not touch an official RustDesk's certificates.
-    let uninstall_cert_cmd = "";
-    let mut uninstall_printer_cmd = "".to_string();
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(exe_path) = exe.to_str() {
-            if uninstall_printer {
-                uninstall_printer_cmd = format!("\"{}\" --uninstall-remote-printer", &exe_path);
-            }
-        }
-    }
+    // Arenna Remote: upstream also runs `--uninstall-cert` (deletes the
+    // RustDesk IDD driver test certificates machine-wide) and
+    // `--uninstall-remote-printer` here. We install neither, and both would
+    // affect an official RustDesk on the same machine.
+    let uninstall_amyuni_idd = if is_uninstall && !is_official_rustdesk_installed() {
+        get_uninstall_amyuni_idd()
+    } else {
+        "".to_owned()
+    };
     let (subkey, path, start_menu, _) = get_install_info();
     format!(
         "
     {before_uninstall}
-    {uninstall_printer_cmd}
-    {uninstall_cert_cmd}
     reg delete {subkey} /f
     {uninstall_amyuni_idd}
     if exist \"{path}\" rd /s /q \"{path}\"
@@ -1824,7 +1832,6 @@ fn get_uninstall(kill_self: bool, uninstall_printer: bool) -> String {
     if exist \"%PROGRAMDATA%\\Microsoft\\Windows\\Start Menu\\Programs\\Startup\\{display_name} Tray.lnk\" del /f /q \"%PROGRAMDATA%\\Microsoft\\Windows\\Start Menu\\Programs\\Startup\\{display_name} Tray.lnk\"
     ",
         before_uninstall=get_before_uninstall(kill_self),
-        uninstall_amyuni_idd=get_uninstall_amyuni_idd(),
         display_name = crate::get_app_display_name(),
     )
 }
