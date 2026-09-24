@@ -1,0 +1,525 @@
+# Builds Arenna Remote for Windows x64 and Android.
+#
+# - Push a tag `vX.Y.Z` -> build, sign and publish a GitHub Release. Clients
+#   check https://github.com/Arenna-Labs/arenna_support_app/releases/latest
+#   for updates, so publishing a release rolls it out.
+# - Run manually (workflow_dispatch) -> same build, artifacts only, nothing
+#   is published.
+#
+# Toolchain versions mirror upstream RustDesk 1.4.9's flutter-build.yml.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "X.Y.Z for a test build (not published)"
+        required: true
+        default: "0.0.1"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  RUST_VERSION: "1.75"
+  CARGO_NDK_VERSION: "3.1.2"
+  LLVM_VERSION: "15.0.6"
+  FLUTTER_VERSION: "3.24.5"
+  BRIDGE_FLUTTER_VERSION: "3.22.3"
+  FLUTTER_RUST_BRIDGE_VERSION: "1.80.1"
+  CARGO_EXPAND_VERSION: "1.0.95"
+  VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
+  # Keep in sync with the baseline in vcpkg.json.
+  VCPKG_COMMIT_ID: "120deac3062162151622ca4860575a33844ba10b"
+  NDK_VERSION: "r28c"
+  APP_EXE: "ArennaRemote.exe"
+  ASSET_PREFIX: "arenna-remote"
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      code: ${{ steps.v.outputs.code }}
+      publish: ${{ steps.v.outputs.publish }}
+    steps:
+      - id: v
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+            PUBLISH=true
+          else
+            VERSION="$INPUT_VERSION"
+            PUBLISH=false
+          fi
+          if ! [[ "$VERSION" =~ ^([0-9]+)\.([0-9]{1,2})\.([0-9]{1,2})$ ]]; then
+            echo "Invalid version '$VERSION' (expected X.Y.Z, minor/patch < 100)"
+            exit 1
+          fi
+          CODE=$(( BASH_REMATCH[1] * 10000 + BASH_REMATCH[2] * 100 + BASH_REMATCH[3] ))
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "code=$CODE" >> "$GITHUB_OUTPUT"
+          echo "publish=$PUBLISH" >> "$GITHUB_OUTPUT"
+          echo "Arenna Remote $VERSION (versionCode $CODE), publish=$PUBLISH"
+
+  bridge:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Install prerequisites
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y clang cmake curl gcc git g++ libclang-dev \
+            libgtk-3-dev llvm-dev nasm ninja-build pkg-config wget
+
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          targets: x86_64-unknown-linux-gnu
+          components: "rustfmt"
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          prefix-key: bridge
+
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          channel: "stable"
+          flutter-version: ${{ env.BRIDGE_FLUTTER_VERSION }}
+          cache: true
+
+      - name: Install flutter_rust_bridge codegen
+        run: |
+          cargo install cargo-expand --version ${{ env.CARGO_EXPAND_VERSION }} --locked
+          cargo install flutter_rust_bridge_codegen --version ${{ env.FLUTTER_RUST_BRIDGE_VERSION }} --features "uuid" --locked
+          # Flutter 3.22.3 needs extended_text 13 to resolve; only used for codegen.
+          sed -i -e 's/extended_text: 14.0.0/extended_text: 13.0.0/g' flutter/pubspec.yaml
+          pushd flutter && flutter pub get && popd
+
+      - name: Generate bridge
+        run: |
+          ~/.cargo/bin/flutter_rust_bridge_codegen --rust-input ./src/flutter_ffi.rs --dart-output ./flutter/lib/generated_bridge.dart --c-output ./flutter/macos/Runner/bridge_generated.h
+          cp ./flutter/macos/Runner/bridge_generated.h ./flutter/ios/Runner/bridge_generated.h
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bridge-artifact
+          path: |
+            ./src/bridge_generated.rs
+            ./src/bridge_generated.io.rs
+            ./flutter/lib/generated_bridge.dart
+            ./flutter/lib/generated_bridge.freezed.dart
+            ./flutter/macos/Runner/bridge_generated.h
+            ./flutter/ios/Runner/bridge_generated.h
+
+  # WindowInjection.dll, used by one of the Windows privacy-mode backends.
+  topmost-window:
+    runs-on: windows-2022
+    steps:
+      - uses: microsoft/setup-msbuild@6fb02220983dee41ce7ae257b6f4d8f9bf5ed4ce # v2
+      - name: Build WindowInjection.dll
+        run: |
+          git clone https://github.com/rustdesk-org/RustDeskTempTopMostWindow RustDeskTempTopMostWindow
+          cd RustDeskTempTopMostWindow
+          git checkout ecd8d6a139eee76845ea66423fb739af450fda90
+          msbuild WindowInjection/WindowInjection.vcxproj -p:Configuration=Release -p:Platform=x64 /p:TargetVersion=Windows10
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: topmostwindow-x64
+          path: ./RustDeskTempTopMostWindow/WindowInjection/x64/Release/WindowInjection.dll
+
+  windows:
+    needs: [version, bridge, topmost-window]
+    runs-on: windows-2022
+    timeout-minutes: 150
+    env:
+      ARENNA_VERSION: ${{ needs.version.outputs.version }}
+      VERSION_CODE: ${{ needs.version.outputs.code }}
+    steps:
+      - name: Export GitHub Actions cache environment variables
+        uses: actions/github-script@d7906e4ad0b1822421a7e6a35d5ca353c962f410 # v6
+        with:
+          script: |
+            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: bridge-artifact
+          path: ./
+
+      - uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2.0.9
+        with:
+          version: ${{ env.LLVM_VERSION }}
+
+      - uses: subosito/flutter-action@2783a3f08e1baf891508463f8c6653c258246225 # v2.12.0
+        with:
+          channel: "stable"
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          architecture: x64
+
+      # https://github.com/flutter/flutter/issues/155685
+      - name: Replace engine with RustDesk's patched Flutter engine
+        run: |
+          flutter precache --windows
+          Invoke-WebRequest -Uri https://github.com/rustdesk/engine/releases/download/main/windows-x64-release.zip -OutFile windows-x64-release.zip
+          Expand-Archive -Path windows-x64-release.zip -DestinationPath windows-x64-release
+          mv -Force windows-x64-release/*  C:/hostedtoolcache/windows/flutter/stable-${{ env.FLUTTER_VERSION }}-x64/bin/cache/artifacts/engine/windows-x64-release/
+
+      - name: Patch Flutter
+        shell: bash
+        run: |
+          cp .github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff $(dirname $(dirname $(which flutter)))
+          cd $(dirname $(dirname $(which flutter)))
+          git apply flutter_3.24.4_dropdown_menu_enableFilter.diff
+
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          targets: x86_64-pc-windows-msvc
+          components: "rustfmt"
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          prefix-key: windows-x64
+
+      - uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11
+        with:
+          vcpkgDirectory: C:\vcpkg
+          vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
+          doNotCache: false
+
+      - name: Install vcpkg dependencies
+        shell: bash
+        env:
+          VCPKG_DEFAULT_HOST_TRIPLET: x64-windows-static
+        run: |
+          if ! $VCPKG_ROOT/vcpkg install --triplet x64-windows-static --x-install-root="$VCPKG_ROOT/installed"; then
+            find "${VCPKG_ROOT}/" -name "*.log" | while read -r _1; do
+              echo "$_1:"; echo "======"; cat "$_1"; echo "======"; echo ""
+            done
+            exit 1
+          fi
+
+      - name: Set app version
+        shell: bash
+        run: |
+          sed -i "s/^version: .*/version: ${ARENNA_VERSION}+${VERSION_CODE}/" flutter/pubspec.yaml
+          grep '^version:' flutter/pubspec.yaml
+
+      - name: Build
+        run: |
+          python3 .\build.py --portable --flutter --skip-portable-pack --hwcodec --vram
+          mv ./flutter/build/windows/x64/runner/Release ./rustdesk
+          if (-not (Test-Path "./rustdesk/${{ env.APP_EXE }}")) { Get-ChildItem ./rustdesk; throw "${{ env.APP_EXE }} not found" }
+
+          # Virtual display driver (Amyuni usbmmidd), used for headless machines.
+          Invoke-WebRequest -Uri https://github.com/rustdesk-org/rdev/releases/download/usbmmidd_v2/usbmmidd_v2.zip -OutFile usbmmidd_v2.zip
+          Expand-Archive usbmmidd_v2.zip -DestinationPath .
+          Remove-Item -Path usbmmidd_v2\Win32 -Recurse
+          Remove-Item -Path "usbmmidd_v2\deviceinstaller64.exe", "usbmmidd_v2\deviceinstaller.exe", "usbmmidd_v2\usbmmidd.bat"
+          mv -Force .\usbmmidd_v2 ./rustdesk
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: topmostwindow-x64
+          path: ./rustdesk
+
+      - name: Build self-extracting installer
+        shell: bash
+        run: |
+          sed -i '/dpiAware/d' res/manifest.xml
+          pushd ./libs/portable
+          pip3 install -r requirements.txt
+          python3 ./generate.py -f ../../rustdesk/ -o . -e "../../rustdesk/${APP_EXE}"
+          popd
+          mkdir -p ./dist
+          mv ./target/release/rustdesk-portable-packer.exe "./dist/${ASSET_PREFIX}-${ARENNA_VERSION}-x86_64.exe"
+
+      - name: Sign update
+        shell: bash
+        env:
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+        run: |
+          if [ -z "$UPDATE_SIGNING_KEY" ]; then
+            if [ "${{ needs.version.outputs.publish }}" = "true" ]; then
+              echo "UPDATE_SIGNING_KEY is required to publish"; exit 1
+            fi
+            echo "::warning::UPDATE_SIGNING_KEY not set, update signature skipped"
+            exit 0
+          fi
+          pip3 install cryptography
+          python3 .github/scripts/sign_update.py sign ./dist/*.exe
+          sha256sum ./dist/*
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-x64
+          path: ./dist/*
+
+  android:
+    needs: [version, bridge]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        job:
+          - { arch: aarch64, target: aarch64-linux-android, abi: arm64-v8a, platform: android-arm64, script: ndk_arm64.sh, triple: aarch64-linux-android }
+          - { arch: armv7, target: armv7-linux-androideabi, abi: armeabi-v7a, platform: android-arm, script: ndk_arm.sh, triple: arm-linux-androideabi }
+          - { arch: x86_64, target: x86_64-linux-android, abi: x86_64, platform: android-x64, script: ndk_x64.sh, triple: x86_64-linux-android }
+    env:
+      ARENNA_VERSION: ${{ needs.version.outputs.version }}
+      VERSION_CODE: ${{ needs.version.outputs.code }}
+    steps:
+      - uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
+        with:
+          tool-cache: false
+          android: false
+          dotnet: true
+          haskell: true
+          large-packages: false
+          docker-images: true
+          swap-storage: false
+
+      - name: Export GitHub Actions cache environment variables
+        uses: actions/github-script@d7906e4ad0b1822421a7e6a35d5ca353c962f410 # v6
+        with:
+          script: |
+            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake curl gcc-multilib git g++ g++-multilib \
+            libayatana-appindicator3-dev libasound2-dev libc6-dev libclang-dev libunwind-dev \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libgtk-3-dev libpam0g-dev \
+            libpulse-dev libva-dev libxcb-randr0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
+            libxdo-dev libxfixes-dev llvm-dev nasm ninja-build openjdk-17-jdk-headless \
+            pkg-config tree wget
+
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          channel: "stable"
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+
+      - name: Patch Flutter
+        run: |
+          cd $(dirname $(dirname $(which flutter)))
+          git apply ${{ github.workspace }}/.github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff
+
+      - uses: nttld/setup-ndk@ed92fe6cadad69be94a966a7ee3271275e62f779 # v1
+        id: setup-ndk
+        with:
+          ndk-version: ${{ env.NDK_VERSION }}
+          add-to-path: true
+
+      - uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11
+        with:
+          vcpkgDirectory: /opt/artifacts/vcpkg
+          vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
+          doNotCache: false
+
+      - name: Install vcpkg dependencies
+        run: |
+          if ! ./flutter/build_android_deps.sh "${{ matrix.job.abi }}"; then
+            find "${VCPKG_ROOT}/" -name "*.log" | while read -r _1; do
+              echo "$_1:"; echo "======"; cat "$_1"; echo "======"; echo ""
+            done
+            exit 1
+          fi
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: bridge-artifact
+          path: ./
+
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          components: "rustfmt"
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          prefix-key: android
+          key: ${{ matrix.job.target }}
+
+      - name: Build native library
+        env:
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+          ANDROID_NDK_ROOT: ${{ steps.setup-ndk.outputs.ndk-path }}
+        run: |
+          rustup target add ${{ matrix.job.target }}
+          cargo install cargo-ndk --version ${{ env.CARGO_NDK_VERSION }} --locked
+          ./flutter/${{ matrix.job.script }}
+          mkdir -p ./jnilib/${{ matrix.job.abi }}
+          cp ./target/${{ matrix.job.target }}/release/liblibrustdesk.so ./jnilib/${{ matrix.job.abi }}/librustdesk.so
+          cp ${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/${{ matrix.job.triple }}/libc++_shared.so ./jnilib/${{ matrix.job.abi }}/
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: jnilib-${{ matrix.job.abi }}
+          path: ./jnilib/
+
+      - name: Configure signing
+        env:
+          ANDROID_SIGNING_KEY: ${{ secrets.ANDROID_SIGNING_KEY }}
+          ANDROID_ALIAS: ${{ secrets.ANDROID_ALIAS }}
+          ANDROID_KEY_STORE_PASSWORD: ${{ secrets.ANDROID_KEY_STORE_PASSWORD }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: .github/scripts/android_signing.sh "${{ needs.version.outputs.publish }}"
+
+      - name: Build APK
+        env:
+          JAVA_HOME: /usr/lib/jvm/java-17-openjdk-amd64
+        run: |
+          export PATH=/usr/lib/jvm/java-17-openjdk-amd64/bin:$PATH
+          sed -i "s/org.gradle.jvmargs=-Xmx1024M/org.gradle.jvmargs=-Xmx2g/g" ./flutter/android/gradle.properties
+          mkdir -p ./flutter/android/app/src/main/jniLibs
+          cp -r ./jnilib/* ./flutter/android/app/src/main/jniLibs/
+          pushd flutter
+          flutter build apk --release --target-platform ${{ matrix.job.platform }} --split-per-abi \
+            --build-name "$ARENNA_VERSION" --build-number "$VERSION_CODE"
+          popd
+          mkdir -p dist
+          mv ./flutter/build/app/outputs/flutter-apk/app-${{ matrix.job.abi }}-release.apk "./dist/${ASSET_PREFIX}-${ARENNA_VERSION}-${{ matrix.job.arch }}.apk"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: android-${{ matrix.job.arch }}
+          path: ./dist/*.apk
+
+  android-universal:
+    needs: [version, android]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      ARENNA_VERSION: ${{ needs.version.outputs.version }}
+      VERSION_CODE: ${{ needs.version.outputs.code }}
+    steps:
+      - uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
+        with:
+          tool-cache: false
+          android: false
+          dotnet: true
+          haskell: true
+          large-packages: false
+          docker-images: true
+          swap-storage: false
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake git libclang-dev llvm-dev nasm ninja-build \
+            openjdk-17-jdk-headless pkg-config
+
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          channel: "stable"
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+
+      - name: Patch Flutter
+        run: |
+          cd $(dirname $(dirname $(which flutter)))
+          git apply ${{ github.workspace }}/.github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff
+
+      # Gradle calls `cargo metadata` to locate the rustls-platform-verifier AAR.
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: bridge-artifact
+          path: ./
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: jnilib-*
+          path: ./flutter/android/app/src/main/jniLibs
+          merge-multiple: true
+
+      - name: Configure signing
+        env:
+          ANDROID_SIGNING_KEY: ${{ secrets.ANDROID_SIGNING_KEY }}
+          ANDROID_ALIAS: ${{ secrets.ANDROID_ALIAS }}
+          ANDROID_KEY_STORE_PASSWORD: ${{ secrets.ANDROID_KEY_STORE_PASSWORD }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: .github/scripts/android_signing.sh "${{ needs.version.outputs.publish }}"
+
+      - name: Build universal APK
+        env:
+          JAVA_HOME: /usr/lib/jvm/java-17-openjdk-amd64
+        run: |
+          export PATH=/usr/lib/jvm/java-17-openjdk-amd64/bin:$PATH
+          sed -i "s/org.gradle.jvmargs=-Xmx1024M/org.gradle.jvmargs=-Xmx2g/g" ./flutter/android/gradle.properties
+          ls -R ./flutter/android/app/src/main/jniLibs
+          pushd flutter
+          flutter build apk --release --target-platform android-arm64,android-arm,android-x64 \
+            --build-name "$ARENNA_VERSION" --build-number "$VERSION_CODE"
+          popd
+          mkdir -p dist
+          mv ./flutter/build/app/outputs/flutter-apk/app-release.apk "./dist/${ASSET_PREFIX}-${ARENNA_VERSION}-universal.apk"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: android-universal
+          path: ./dist/*.apk
+
+  release:
+    needs: [version, windows, android, android-universal]
+    if: needs.version.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: ./artifacts
+
+      - name: Publish release
+        run: |
+          set -e
+          mkdir dist
+          cp artifacts/windows-x64/* artifacts/android-*/*.apk dist/
+          cd dist
+          ls -la
+          test -f "${ASSET_PREFIX}-${VERSION}-x86_64.exe"
+          test -f "${ASSET_PREFIX}-${VERSION}-x86_64.exe.sig"
+          test -f "${ASSET_PREFIX}-${VERSION}-universal.apk"
+          sha256sum * > SHA256SUMS.txt
+          cat > notes.md <<EOF
+          ## Arenna Remote ${VERSION}
+
+          **Windows:** descarga \`${ASSET_PREFIX}-${VERSION}-x86_64.exe\` y ejecútalo (instalación opcional desde la propia app). Las instalaciones existentes se actualizan solas.
+
+          **Android:** instala \`${ASSET_PREFIX}-${VERSION}-universal.apk\` (o el APK específico de tu arquitectura).
+
+          Los ficheros \`.sig\` son las firmas Ed25519 que el cliente verifica antes de auto-actualizarse. \`SHA256SUMS.txt\` contiene los hashes de todos los ficheros.
+          EOF
+          # Create as draft, upload everything, then publish: clients only see
+          # the release once every asset is in place.
+          gh release create "v${VERSION}" --draft --title "Arenna Remote ${VERSION}" --notes-file notes.md --verify-tag
+          gh release upload "v${VERSION}" ./*.exe ./*.sig ./*.apk SHA256SUMS.txt --clobber
+          gh release edit "v${VERSION}" --draft=false --latest
