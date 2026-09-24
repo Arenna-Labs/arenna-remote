@@ -1,0 +1,75 @@
+# End-to-end check of the Windows auto-update on a clean runner:
+# install an older published release silently, then wait until the
+# installed service updates itself to the latest release on its own.
+
+name: E2E auto-update
+
+on:
+  workflow_dispatch:
+    inputs:
+      from_version:
+        description: "Published version to install first (X.Y.Z)"
+        required: true
+      expect_version:
+        description: "Version it must update to (the latest release, X.Y.Z)"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  update:
+    runs-on: windows-2022
+    timeout-minutes: 40
+    env:
+      FROM: ${{ inputs.from_version }}
+      EXPECT: ${{ inputs.expect_version }}
+      UNINSTALL_KEY: HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\ArennaRemote
+    steps:
+      - name: Install the older release silently
+        run: |
+          $exe = "arenna-remote-$env:FROM-x86_64.exe"
+          Invoke-WebRequest "https://github.com/${{ github.repository }}/releases/download/v$env:FROM/$exe" -OutFile $exe
+          Start-Process -FilePath ".\$exe" -ArgumentList "--silent-install" -Wait
+          for ($i = 0; $i -lt 60; $i++) {
+            $v = (Get-ItemProperty $env:UNINSTALL_KEY -ErrorAction SilentlyContinue).DisplayVersion
+            if ($v) { break }
+            Start-Sleep 5
+          }
+          Get-ItemProperty $env:UNINSTALL_KEY | Format-List DisplayName, DisplayVersion, Publisher, InstallLocation
+          if ($v -ne $env:FROM) { throw "Installed version is '$v', expected $env:FROM" }
+          Get-Service ArennaRemote | Format-List Name, DisplayName, Status
+
+      - name: Wait for the service to update itself
+        run: |
+          # The updater checks 30 s after the service starts, downloads the
+          # latest release, verifies its signature and reinstalls.
+          for ($i = 0; $i -lt 120; $i++) {
+            $v = (Get-ItemProperty $env:UNINSTALL_KEY -ErrorAction SilentlyContinue).DisplayVersion
+            if ($v -eq $env:EXPECT) { break }
+            Start-Sleep 10
+          }
+          Get-ItemProperty $env:UNINSTALL_KEY | Format-List DisplayName, DisplayVersion
+          Get-Service ArennaRemote | Format-List Name, Status
+          if ($v -ne $env:EXPECT) { throw "Still on '$v' after 20 minutes, expected $env:EXPECT" }
+          Write-Output "Updated $env:FROM -> $v"
+
+      - name: Collect logs
+        if: always()
+        run: |
+          New-Item -ItemType Directory -Force logs | Out-Null
+          $dirs = @(
+            "C:\Windows\ServiceProfiles\LocalService\AppData\Roaming\ArennaRemote\log",
+            "C:\Windows\System32\config\systemprofile\AppData\Roaming\ArennaRemote\log",
+            "$env:APPDATA\ArennaRemote\log"
+          )
+          foreach ($d in $dirs) {
+            if (Test-Path $d) { Copy-Item -Recurse $d ("logs\" + ($d -replace '[:\\]', '_')) }
+          }
+          Get-ChildItem -Recurse logs | Select-Object FullName, Length
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: e2e-update-logs
+          path: logs
