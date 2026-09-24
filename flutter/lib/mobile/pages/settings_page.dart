@@ -36,7 +36,7 @@ class SettingsPage extends StatefulWidget implements PageShape {
   State<SettingsPage> createState() => _SettingsState();
 }
 
-const url = 'https://rustdesk.com/';
+const url = 'https://arennalabs.com/';
 
 enum KeepScreenOn {
   never,
@@ -593,21 +593,18 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
           gFFI.invokeMethod(AndroidChannel.kSetStartOnBootOpt, toValue);
         }));
 
-    if (!bind.isCustomClient()) {
-      enhancementsTiles.add(
-        SettingsTile.switchTile(
-          initialValue: _checkUpdateOnStartup,
-          title:
-              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text(translate('Check for software update on startup')),
-          ]),
-          onToggle: (bool toValue) async {
-            await mainSetLocalBoolOption(kOptionEnableCheckUpdate, toValue);
-            setState(() => _checkUpdateOnStartup = toValue);
-          },
-        ),
-      );
-    }
+    enhancementsTiles.add(
+      SettingsTile.switchTile(
+        initialValue: _checkUpdateOnStartup,
+        title: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(translate('Check for software update on startup')),
+        ]),
+        onToggle: (bool toValue) async {
+          await mainSetLocalBoolOption(kOptionEnableCheckUpdate, toValue);
+          setState(() => _checkUpdateOnStartup = toValue);
+        },
+      ),
+    );
 
     enhancementsTiles.add(
       SettingsTile.switchTile(
@@ -960,7 +957,7 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
                 title: Text(translate("Version: ") + version),
                 value: Padding(
                   padding: EdgeInsets.symmetric(vertical: 8),
-                  child: Text('rustdesk.com',
+                  child: Text('arennalabs.com',
                       style: TextStyle(
                         decoration: TextDecoration.underline,
                       )),
@@ -984,9 +981,21 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
                   leading: Icon(Icons.fingerprint)),
             SettingsTile(
               title: Text(translate("Privacy Statement")),
-              onPressed: (context) =>
-                  launchUrlString('https://rustdesk.com/privacy.html'),
+              onPressed: (context) => launchUrlString('https://arennalabs.com'),
               leading: Icon(Icons.privacy_tip),
+            ),
+            SettingsTile(
+                title: Text(
+                    'Copyright © ${DateTime.now().toString().substring(0, 4)} Arenna Labs S.L.'),
+                value: Padding(
+                  padding: EdgeInsets.symmetric(vertical: 8),
+                  child: Text(kUpstreamLegalNotice),
+                ),
+                leading: Icon(Icons.copyright)),
+            SettingsTile(
+              title: Text('Código fuente'),
+              onPressed: (context) => launchUrlString(kArennaSourceCodeUrl),
+              leading: Icon(Icons.code),
             )
           ],
         ),
@@ -1096,18 +1105,29 @@ void showAbout(OverlayDialogManager dialogManager) {
       title: Text(translate('About RustDesk')),
       content: Wrap(direction: Axis.vertical, spacing: 12, children: [
         Text('Version: $version'),
+        Text(
+            'Copyright © ${DateTime.now().toString().substring(0, 4)} Arenna Labs S.L.'),
+        ConstrainedBox(
+            constraints: BoxConstraints(maxWidth: 260),
+            child: Text(kUpstreamLegalNotice)),
         InkWell(
             onTap: () async {
-              const url = 'https://rustdesk.com/';
+              const url = 'https://arennalabs.com/';
               await launchUrl(Uri.parse(url));
             },
             child: Padding(
               padding: EdgeInsets.symmetric(vertical: 8),
-              child: Text('rustdesk.com',
+              child: Text('arennalabs.com',
                   style: TextStyle(
                     decoration: TextDecoration.underline,
                   )),
             )),
+        InkWell(
+            onTap: () => launchUrlString(kArennaSourceCodeUrl),
+            child: Text('Código fuente',
+                style: TextStyle(
+                  decoration: TextDecoration.underline,
+                ))),
       ]),
       actions: [],
     );

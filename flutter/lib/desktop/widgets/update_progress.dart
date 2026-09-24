@@ -30,7 +30,7 @@ void handleUpdate(String releasePageUrl) {
     return CustomAlertDialog(
         title: Obx(() => Text(translate(_isExtracting.isTrue
             ? 'Preparing for installation ...'
-            : 'Downloading {$appName}'))),
+            : 'Downloading {$appDisplayName}'))),
         content:
             UpdateProgress(releasePageUrl, downloadUrl, downloadId, onCanceled)
                 .marginSymmetric(horizontal: 8)
@@ -230,8 +230,8 @@ class UpdateProgressState extends State<UpdateProgress> {
     msgBox(
       gFFI.sessionId,
       'custom-nocancel',
-      '{$appName} Update',
-      '{$appName}-to-update-tip',
+      '{$appDisplayName} Update',
+      '{$appDisplayName}-to-update-tip',
       '',
       gFFI.dialogManager,
       onSubmit: () {
@@ -261,7 +261,7 @@ class UpdateProgressState extends State<UpdateProgress> {
       minHeight: 20,
       borderRadius: BorderRadius.circular(5),
       backgroundColor: Colors.grey[300],
-      valueColor: const AlwaysStoppedAnimation<Color>(Colors.blue),
+      valueColor: const AlwaysStoppedAnimation<Color>(MyTheme.accent),
     );
   }
 }

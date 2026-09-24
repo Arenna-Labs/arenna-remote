@@ -815,6 +815,10 @@ class RustdeskImpl {
     return js.context.callMethod('getByName', ['app-name']);
   }
 
+  String mainGetAppDisplayNameSync({dynamic hint}) {
+    return 'Arenna Remote';
+  }
+
   String mainUriPrefixSync({dynamic hint}) {
     throw UnimplementedError("mainUriPrefixSync");
   }

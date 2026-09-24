@@ -544,7 +544,7 @@ class _GeneralState extends State<_General> {
             ),
           ),
       ],
-      if (!isWeb && !bind.isCustomClient())
+      if (!isWeb)
         _OptionCheckBox(
           context,
           'Check for software update on startup',
@@ -2284,7 +2284,7 @@ class __PrinterState extends State<_Printer> {
       return Align(
         alignment: Alignment.topLeft,
         child:
-            Text(translate('printer-requires-installed-{$appName}-client-tip')),
+            Text(translate('printer-requires-installed-{$appDisplayName}-client-tip')),
       ).marginOnly(left: _kCardLeftMargin);
     }
 
@@ -2304,7 +2304,7 @@ class __PrinterState extends State<_Printer> {
               ? Offstage()
               : Align(
                   alignment: Alignment.topLeft,
-                  child: Text(translate('printer-{$appName}-not-installed-tip'))
+                  child: Text(translate('printer-{$appDisplayName}-not-installed-tip'))
                       .marginOnly(bottom: 10.0),
                 ),
         ),
@@ -2319,7 +2319,7 @@ class __PrinterState extends State<_Printer> {
                               .copyWith(color: Colors.red))
                       .marginOnly(bottom: 10.0)),
         ),
-        _Button('Install {$appName} Printer', () {
+        _Button('Install {$appDisplayName} Printer', () {
           failedMsg.value = '';
           bind.mainSetCommon(key: 'install-printer', value: '');
         })
@@ -2329,7 +2329,7 @@ class __PrinterState extends State<_Printer> {
     Widget tipReady() {
       return Align(
         alignment: Alignment.topLeft,
-        child: Text(translate('printer-{$appName}-ready-tip')),
+        child: Text(translate('printer-{$appDisplayName}-ready-tip')),
       ).marginOnly(left: _kCardLeftMargin);
     }
 
@@ -2448,7 +2448,7 @@ class _AboutState extends State<_About> {
                         .marginSymmetric(vertical: 4.0)),
               InkWell(
                   onTap: () {
-                    launchUrlString('https://rustdesk.com/privacy.html');
+                    launchUrlString('https://arennalabs.com');
                   },
                   child: Text(
                     translate('Privacy Statement'),
@@ -2456,14 +2456,22 @@ class _AboutState extends State<_About> {
                   ).marginSymmetric(vertical: 4.0)),
               InkWell(
                   onTap: () {
-                    launchUrlString('https://rustdesk.com');
+                    launchUrlString('https://arennalabs.com');
                   },
                   child: Text(
                     translate('Website'),
                     style: linkStyle,
                   ).marginSymmetric(vertical: 4.0)),
+              InkWell(
+                  onTap: () {
+                    launchUrlString(kArennaSourceCodeUrl);
+                  },
+                  child: Text(
+                    'Código fuente',
+                    style: linkStyle,
+                  ).marginSymmetric(vertical: 4.0)),
               Container(
-                decoration: const BoxDecoration(color: Color(0xFF2c8cff)),
+                decoration: const BoxDecoration(color: Color(0xFF008257)),
                 padding:
                     const EdgeInsets.symmetric(vertical: 24, horizontal: 8),
                 child: SelectionArea(
@@ -2474,7 +2482,7 @@ class _AboutState extends State<_About> {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
-                            'Copyright © ${DateTime.now().toString().substring(0, 4)} Purslane Tech Pte. Ltd.\n$license',
+                            'Copyright © ${DateTime.now().toString().substring(0, 4)} Arenna Labs S.L.\n$kUpstreamLegalNotice\n$license',
                             style: const TextStyle(color: Colors.white),
                           ),
                           Text(
