@@ -1648,7 +1648,9 @@ String bool2option(String option, bool b) {
       option == kOptionStopService ||
       option == kOptionDirectServer ||
       option == kOptionForceAlwaysRelay) {
-    res = b ? 'Y' : defaultOptionNo;
+    // Arenna Remote: auto-update defaults to on (DEFAULT_SETTINGS), so
+    // turning it off must store an explicit 'N'.
+    res = b ? 'Y' : (option == kOptionAllowAutoUpdate ? 'N' : defaultOptionNo);
   } else {
     res = b ? 'Y' : 'N';
   }

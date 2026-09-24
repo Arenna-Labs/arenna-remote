@@ -2859,25 +2859,17 @@ pub fn main_get_common(key: String) -> String {
             }
         } else if key.starts_with("download-file-") {
             let _version = key.replace("download-file-", "");
+            // Arenna Remote: `_version` is the release tag (vX.Y.Z); only the
+            // self-extracting .exe is published.
             #[cfg(target_os = "windows")]
             return match (
-                crate::platform::windows::is_msi_installed(),
-                crate::common::is_custom_client(),
+                hbb_common::arenna::tag_version(&_version),
+                crate::platform::windows::release_arch_suffix(),
             ) {
-                (Ok(true), false) => match crate::platform::windows::release_arch_suffix() {
-                    Some(arch) => format!("rustdesk-{_version}-{arch}.msi"),
-                    None => "error:unsupported".to_owned(),
-                },
-                (Ok(true), true) | (Ok(false), _) => {
-                    match crate::platform::windows::release_arch_suffix() {
-                        Some(arch) => format!("rustdesk-{_version}-{arch}.exe"),
-                        None => "error:unsupported".to_owned(),
-                    }
+                (Some(version), Some(arch)) => {
+                    hbb_common::arenna::windows_asset_name(&version, arch)
                 }
-                (Err(e), _) => {
-                    log::error!("Failed to check if is msi: {}", e);
-                    format!("error:update-failed-check-msi-tip")
-                }
+                _ => "error:unsupported".to_owned(),
             };
             #[cfg(target_os = "macos")]
             {
@@ -2972,7 +2964,33 @@ pub fn main_set_common(_key: String, _value: String) {
                     // 1.4.0 does not support "--update"
                     // But we can assume that the new version supports it.
 
-                    #[cfg(any(target_os = "windows", target_os = "macos"))]
+                    // Arenna Remote: verify the release signature first. It
+                    // needs a blocking HTTP request, so leave the FFI thread.
+                    #[cfg(target_os = "windows")]
+                    {
+                        let f = f.to_owned();
+                        let download_url = _value.clone();
+                        std::thread::spawn(move || {
+                            if let Err(e) = crate::arenna::verify_downloaded_update(
+                                std::path::Path::new(&f),
+                                &download_url,
+                            ) {
+                                log::error!("Rejected update {}: {}", download_url, e);
+                                fs::remove_file(&f).ok();
+                                return;
+                            }
+                            match crate::platform::update_to(&f) {
+                                Ok(_) => {
+                                    log::info!("Update process is launched successfully!");
+                                }
+                                Err(e) => {
+                                    log::error!("Failed to update to new version, {}", e);
+                                    fs::remove_file(&f).ok();
+                                }
+                            }
+                        });
+                    }
+                    #[cfg(target_os = "macos")]
                     match crate::platform::update_to(f) {
                         Ok(_) => {
                             log::info!("Update process is launched successfully!");

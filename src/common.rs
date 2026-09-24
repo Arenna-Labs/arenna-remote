@@ -21,7 +21,7 @@ use hbb_common::{
     },
     futures::future::join_all,
     futures_util::future::poll_fn,
-    get_version_number, log,
+    log,
     message_proto::*,
     protobuf::{Enum, Message as _},
     rendezvous_proto::*,
@@ -948,41 +948,42 @@ pub fn check_software_update() {
     }
 }
 
-// No need to check `danger_accept_invalid_cert` for now.
-// Because the url is always `https://api.rustdesk.com/version/latest`.
+// Arenna Remote: the update channel is the latest GitHub release of our own
+// repository (hbb_common::arenna::latest_release_url), compared with the
+// product version, not with the RustDesk protocol version.
+// No need to check `danger_accept_invalid_cert`: the URL is always github.com.
 #[tokio::main(flavor = "current_thread")]
 pub async fn do_check_software_update() -> hbb_common::ResultType<()> {
-    let (request, url) =
-        hbb_common::version_check_request(hbb_common::VER_TYPE_RUSTDESK_CLIENT.to_string());
+    let url = hbb_common::arenna::latest_release_url();
+    let current = hbb_common::arenna::PRODUCT_VERSION;
     let proxy_conf = Config::get_socks();
     let tls_url = get_url_for_tls(&url, &proxy_conf);
     let tls_type = get_cached_tls_type(tls_url);
     let is_tls_not_cached = tls_type.is_none();
     let tls_type = tls_type.unwrap_or(TlsType::Rustls);
     let client = create_http_client_async(tls_type, false);
-    let latest_release_response = match client.post(&url).json(&request).send().await {
-        Ok(resp) => {
+    let newer_release = match crate::arenna::newer_release_page(&client, &url, current).await {
+        Ok(newer) => {
             upsert_tls_cache(tls_url, tls_type, false);
-            resp
+            newer
         }
         Err(err) => {
-            if is_tls_not_cached && err.is_request() {
+            let is_request_error = err
+                .downcast_ref::<reqwest::Error>()
+                .map_or(false, |e| e.is_request());
+            if is_tls_not_cached && is_request_error {
                 let tls_type = TlsType::NativeTls;
                 let client = create_http_client_async(tls_type, false);
-                let resp = client.post(&url).json(&request).send().await?;
+                let newer = crate::arenna::newer_release_page(&client, &url, current).await?;
                 upsert_tls_cache(tls_url, tls_type, false);
-                resp
+                newer
             } else {
-                return Err(err.into());
+                return Err(err);
             }
         }
     };
-    let bytes = latest_release_response.bytes().await?;
-    let resp: hbb_common::VersionCheckResponse = serde_json::from_slice(&bytes)?;
-    let response_url = resp.url;
-    let latest_release_version = response_url.rsplit('/').next().unwrap_or_default();
 
-    if get_version_number(&latest_release_version) > get_version_number(crate::VERSION) {
+    if let Some(response_url) = newer_release {
         #[cfg(feature = "flutter")]
         {
             let mut m = HashMap::new();

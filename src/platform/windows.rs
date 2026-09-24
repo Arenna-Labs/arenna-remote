@@ -3750,10 +3750,8 @@ pub fn try_remove_temp_update_files() {
         if let Ok(entry) = entry {
             let path = entry.path();
             if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
-                // Match files like rustdesk-*.msi or rustdesk-*.exe
-                if file_name.starts_with("rustdesk-")
-                    && (file_name.ends_with(".msi") || file_name.ends_with(".exe"))
-                {
+                // Match our downloaded installers: arenna-remote-*.exe
+                if hbb_common::arenna::is_update_file_name(file_name) {
                     // Skip files modified within the last hour to avoid deleting files being downloaded
                     if let Ok(metadata) = std::fs::metadata(&path) {
                         if let Ok(modified) = metadata.modified() {

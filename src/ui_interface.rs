@@ -757,8 +757,14 @@ pub fn get_new_version() -> String {
 }
 
 #[inline]
+/// Version shown to people: the Arenna Remote release plus the RustDesk base
+/// (`crate::VERSION` stays the protocol version sent to peers).
 pub fn get_version() -> String {
-    crate::VERSION.to_owned()
+    format!(
+        "{} (RustDesk {})",
+        hbb_common::arenna::PRODUCT_VERSION,
+        crate::VERSION
+    )
 }
 
 #[cfg(any(target_os = "android", target_os = "ios", feature = "flutter"))]

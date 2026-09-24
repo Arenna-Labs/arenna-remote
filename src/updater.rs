@@ -132,26 +132,26 @@ fn check_update(manually: bool) -> ResultType<()> {
     if update_url.is_empty() {
         log::debug!("No update available.");
     } else {
-        let download_url = update_url.replace("tag", "download");
-        let version = download_url.split('/').last().unwrap_or_default();
+        // Arenna Remote: the installer attached to our GitHub release, e.g.
+        // .../releases/download/v1.2.3/arenna-remote-1.2.3-x86_64.exe
+        let Some(version) = hbb_common::arenna::version_from_release_url(&update_url) else {
+            bail!("Unexpected release URL: {}", update_url);
+        };
         #[cfg(target_os = "windows")]
-        let download_url = if cfg!(feature = "flutter") {
+        let download_url = {
             let Some(arch) = crate::platform::windows::release_arch_suffix() else {
                 bail!(
                     "Unsupported Windows release architecture: {}",
                     std::env::consts::ARCH
                 );
             };
-            format!(
-                "{}/rustdesk-{}-{}.{}",
-                download_url,
-                version,
-                arch,
-                if update_msi { "msi" } else { "exe" }
+            hbb_common::arenna::release_download_url(
+                &version,
+                &hbb_common::arenna::windows_asset_name(&version, arch),
             )
-        } else {
-            format!("{}/rustdesk-{}-x86-sciter.exe", download_url, version)
         };
+        #[cfg(not(target_os = "windows"))]
+        let download_url = update_url.replace("tag", "download");
         log::debug!("New version available: {}", &version);
         let client = create_http_client_with_url(&download_url);
         let Some(file_path) = get_download_file_from_url(&download_url) else {
@@ -191,6 +191,11 @@ fn check_update(manually: bool) -> ResultType<()> {
             let file_data = response.bytes()?;
             let mut file = std::fs::File::create(&file_path)?;
             file.write_all(&file_data)?;
+        }
+        #[cfg(target_os = "windows")]
+        if let Err(e) = crate::arenna::verify_downloaded_update(&file_path, &download_url) {
+            std::fs::remove_file(&file_path).ok();
+            bail!("Rejected update {}: {}", download_url, e);
         }
         // We have checked if the `conns` is empty before, but we need to check again.
         // No need to care about the downloaded file here, because it's rare case that the `conns` are empty
