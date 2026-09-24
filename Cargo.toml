@@ -1,10 +1,10 @@
 [package]
 name = "rustdesk"
 version = "1.4.9"
-authors = ["rustdesk <info@rustdesk.com>"]
+authors = ["Arenna Labs S.L.", "RustDesk contributors <info@rustdesk.com>"]
 edition = "2021"
 build= "build.rs"
-description = "RustDesk Remote Desktop"
+description = "Arenna Remote"
 default-run = "rustdesk"
 rust-version = "1.75"
 
@@ -210,10 +210,11 @@ exclude = ["vdi/host", "examples/custom_plugin"]
 libxdo-sys = { path = "libs/libxdo-sys-stub" }
 
 [package.metadata.winres]
-LegalCopyright = "Copyright © 2026 Purslane Tech Pte. Ltd. All rights reserved."
-ProductName = "RustDesk"
-FileDescription = "RustDesk Remote Desktop"
-OriginalFilename = "rustdesk.exe"
+CompanyName = "Arenna Labs S.L."
+LegalCopyright = "Copyright © 2026 Arenna Labs S.L. Based on RustDesk (AGPL-3.0)."
+ProductName = "Arenna Remote"
+FileDescription = "Arenna Remote"
+OriginalFilename = "ArennaRemote.exe"
 
 [target.'cfg(target_os="windows")'.build-dependencies]
 winres = "0.1"
