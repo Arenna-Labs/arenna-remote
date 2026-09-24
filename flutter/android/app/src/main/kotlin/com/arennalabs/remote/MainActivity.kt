@@ -1,4 +1,4 @@
-package com.carriez.flutter_hbb
+package com.arennalabs.remote
 
 /**
  * Handle events from flutter
