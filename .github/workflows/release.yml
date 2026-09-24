@@ -4,7 +4,10 @@
 #   check https://github.com/Arenna-Labs/arenna_support_app/releases/latest
 #   for updates, so publishing a release rolls it out.
 # - Run manually (workflow_dispatch) or push to a feat/** branch -> same
-#   build, artifacts only, nothing is published.
+#   build, artifacts only (unsigned installer, debug-signed APKs).
+#
+# Signing keys live in the `release` environment, which only tags `v*` can
+# use; only the final `release` job (no third-party build tooling) sees them.
 #
 # Toolchain versions mirror upstream RustDesk 1.4.9's flutter-build.yml.
 
@@ -25,7 +28,7 @@ on:
         default: "0.0.1"
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: release-${{ github.ref }}
@@ -45,6 +48,9 @@ env:
   NDK_VERSION: "r28c"
   APP_EXE: "ArennaRemote.exe"
   ASSET_PREFIX: "arenna-remote"
+  # SHA-256 of third-party binaries bundled into the installer.
+  ENGINE_SHA256: "EC8CABF36EE4FF24C8D98DE25B00E70781EB03876265AEE84D0FE554A110036E"
+  USBMMIDD_SHA256: "629B51E9944762BAE73948171C65D09A79595CF4C771A82EBC003FBBA5B24F51"
 
 jobs:
   version:
@@ -179,6 +185,9 @@ jobs:
         run: |
           flutter precache --windows
           Invoke-WebRequest -Uri https://github.com/rustdesk/engine/releases/download/main/windows-x64-release.zip -OutFile windows-x64-release.zip
+          # The `main` release asset is mutable: pin what we ship inside the signed installer.
+          $hash = (Get-FileHash windows-x64-release.zip -Algorithm SHA256).Hash
+          if ($hash -ne "${{ env.ENGINE_SHA256 }}") { throw "Unexpected engine checksum $hash" }
           Expand-Archive -Path windows-x64-release.zip -DestinationPath windows-x64-release
           mv -Force windows-x64-release/*  C:/hostedtoolcache/windows/flutter/stable-${{ env.FLUTTER_VERSION }}-x64/bin/cache/artifacts/engine/windows-x64-release/
 
@@ -231,6 +240,8 @@ jobs:
 
           # Virtual display driver (Amyuni usbmmidd), used for headless machines.
           Invoke-WebRequest -Uri https://github.com/rustdesk-org/rdev/releases/download/usbmmidd_v2/usbmmidd_v2.zip -OutFile usbmmidd_v2.zip
+          $hash = (Get-FileHash usbmmidd_v2.zip -Algorithm SHA256).Hash
+          if ($hash -ne "${{ env.USBMMIDD_SHA256 }}") { throw "Unexpected usbmmidd checksum $hash" }
           Expand-Archive usbmmidd_v2.zip -DestinationPath .
           Remove-Item -Path usbmmidd_v2\Win32 -Recurse
           Remove-Item -Path "usbmmidd_v2\deviceinstaller64.exe", "usbmmidd_v2\deviceinstaller.exe", "usbmmidd_v2\usbmmidd.bat"
@@ -251,22 +262,6 @@ jobs:
           popd
           mkdir -p ./dist
           mv ./target/release/rustdesk-portable-packer.exe "./dist/${ASSET_PREFIX}-${ARENNA_VERSION}-x86_64.exe"
-
-      - name: Sign update
-        shell: bash
-        env:
-          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
-        run: |
-          if [ -z "$UPDATE_SIGNING_KEY" ]; then
-            if [ "${{ needs.version.outputs.publish }}" = "true" ]; then
-              echo "UPDATE_SIGNING_KEY is required to publish"; exit 1
-            fi
-            echo "::warning::UPDATE_SIGNING_KEY not set, update signature skipped"
-            exit 0
-          fi
-          pip3 install cryptography
-          python3 .github/scripts/sign_update.py sign ./dist/*.exe
-          sha256sum ./dist/*
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -380,13 +375,9 @@ jobs:
           name: jnilib-${{ matrix.job.abi }}
           path: ./jnilib/
 
-      - name: Configure signing
-        env:
-          ANDROID_SIGNING_KEY: ${{ secrets.ANDROID_SIGNING_KEY }}
-          ANDROID_ALIAS: ${{ secrets.ANDROID_ALIAS }}
-          ANDROID_KEY_STORE_PASSWORD: ${{ secrets.ANDROID_KEY_STORE_PASSWORD }}
-          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-        run: .github/scripts/android_signing.sh "${{ needs.version.outputs.publish }}"
+      # Built with the debug key; the release job re-signs with the Arenna key.
+      - name: Use debug signing
+        run: sed -i "s/signingConfigs.release/signingConfigs.debug/g" ./flutter/android/app/build.gradle
 
       - name: Build APK
         env:
@@ -463,13 +454,9 @@ jobs:
           path: ./flutter/android/app/src/main/jniLibs
           merge-multiple: true
 
-      - name: Configure signing
-        env:
-          ANDROID_SIGNING_KEY: ${{ secrets.ANDROID_SIGNING_KEY }}
-          ANDROID_ALIAS: ${{ secrets.ANDROID_ALIAS }}
-          ANDROID_KEY_STORE_PASSWORD: ${{ secrets.ANDROID_KEY_STORE_PASSWORD }}
-          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-        run: .github/scripts/android_signing.sh "${{ needs.version.outputs.publish }}"
+      # Built with the debug key; the release job re-signs with the Arenna key.
+      - name: Use debug signing
+        run: sed -i "s/signingConfigs.release/signingConfigs.debug/g" ./flutter/android/app/build.gradle
 
       - name: Build universal APK
         env:
@@ -493,7 +480,10 @@ jobs:
   release:
     needs: [version, windows, android, android-universal]
     if: needs.version.outputs.publish == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    environment: release
+    permissions:
+      contents: write
     env:
       VERSION: ${{ needs.version.outputs.version }}
       GH_TOKEN: ${{ github.token }}
@@ -504,18 +494,39 @@ jobs:
         with:
           path: ./artifacts
 
+      - name: Collect files
+        run: |
+          mkdir dist
+          cp artifacts/windows-x64/*.exe artifacts/android-*/*.apk dist/
+          ls -la dist
+          test -f "dist/${ASSET_PREFIX}-${VERSION}-x86_64.exe"
+          test -f "dist/${ASSET_PREFIX}-${VERSION}-universal.apk"
+
+      - name: Sign the Windows installer
+        env:
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+        run: |
+          pip3 install --break-system-packages cryptography
+          python3 .github/scripts/sign_update.py sign dist/*.exe
+          # The signature must verify with the keys compiled into the app,
+          # or every installed client would reject this release.
+          KEYS=$(python3 .github/scripts/update_public_keys.py libs/hbb_common/src/arenna.rs)
+          for f in dist/*.exe; do python3 .github/scripts/sign_update.py verify "$f" $KEYS; done
+
+      - name: Sign the APKs
+        env:
+          ANDROID_SIGNING_KEY: ${{ secrets.ANDROID_SIGNING_KEY }}
+          ANDROID_ALIAS: ${{ secrets.ANDROID_ALIAS }}
+          ANDROID_KEY_STORE_PASSWORD: ${{ secrets.ANDROID_KEY_STORE_PASSWORD }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: .github/scripts/sign_apks.sh dist/*.apk
+
       - name: Publish release
         run: |
           set -e
-          mkdir dist
-          cp artifacts/windows-x64/* artifacts/android-*/*.apk dist/
           cd dist
-          ls -la
-          test -f "${ASSET_PREFIX}-${VERSION}-x86_64.exe"
-          test -f "${ASSET_PREFIX}-${VERSION}-x86_64.exe.sig"
-          test -f "${ASSET_PREFIX}-${VERSION}-universal.apk"
           sha256sum * > SHA256SUMS.txt
-          cat > notes.md <<EOF
+          cat > ../notes.md <<EOF
           ## Arenna Remote ${VERSION}
 
           **Windows:** descarga \`${ASSET_PREFIX}-${VERSION}-x86_64.exe\` y ejecútalo (instalación opcional desde la propia app). Las instalaciones existentes se actualizan solas.
@@ -526,6 +537,6 @@ jobs:
           EOF
           # Create as draft, upload everything, then publish: clients only see
           # the release once every asset is in place.
-          gh release create "v${VERSION}" --draft --title "Arenna Remote ${VERSION}" --notes-file notes.md --verify-tag
+          gh release create "v${VERSION}" --draft --title "Arenna Remote ${VERSION}" --notes-file ../notes.md --verify-tag
           gh release upload "v${VERSION}" ./*.exe ./*.sig ./*.apk SHA256SUMS.txt --clobber
           gh release edit "v${VERSION}" --draft=false --latest

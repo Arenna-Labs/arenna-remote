@@ -52,8 +52,11 @@ control táctil, activar el servicio de accesibilidad **Arenna Remote Input**.
   automática* en Ajustes → General, activada por defecto). También aparece un
   aviso en la pantalla principal para actualizar a mano.
 - Antes de ejecutar un instalador descargado, el cliente verifica su firma
-  Ed25519 (`.sig` de la release) con una clave pública compilada en la app.
-  Un fichero sin firma válida se descarta.
+  Ed25519 (`.sig` de la release, que cubre el nombre del fichero y su
+  contenido) con las claves públicas compiladas en la app. El auto-update
+  descarga y verifica en memoria y guarda el instalador en
+  `C:\Program Files\ArennaRemote\update`, bloqueado hasta ejecutarlo. Un
+  fichero sin firma válida se descarta.
 - Android muestra un aviso con enlace a la release (el APK está firmado
   siempre con la misma clave, así que se instala encima).
 
@@ -94,9 +97,10 @@ La CI compila, firma y publica la release (como borrador hasta que están
 todos los ficheros; después pasa a *latest* y los clientes la ven). La
 versión sale del tag: no hay que tocar ningún fichero. Un push a una rama
 `feat/**` o un lanzamiento manual del workflow hace el mismo build sin
-publicar (artefactos en la ejecución de Actions).
+publicar ni firmar (artefactos en la ejecución de Actions).
 
-Secretos de GitHub Actions necesarios:
+Secretos del *environment* `release` de GitHub Actions (solo accesible desde
+tags `v*`; únicamente el job final `release` los ve):
 
 | Secreto | Qué es |
 |---|---|
@@ -108,8 +112,18 @@ Secretos de GitHub Actions necesarios:
 perder**: sin la keystore los APK nuevos no se instalan encima de los
 antiguos, y sin la clave de firma los Windows instalados rechazan las
 actualizaciones. Deben estar guardadas en un gestor de contraseñas de la
-empresa. Para rotar la clave de updates hay que publicar antes una versión
-que confíe en la clave nueva.
+empresa.
+
+Rotar la clave de updates: añadir la nueva clave pública a
+`UPDATE_PUBLIC_KEYS` (`libs/hbb_common/src/arenna.rs`) y poner en
+`UPDATE_SIGNING_KEY` las dos semillas separadas por coma; cada `.sig`
+llevará una firma por clave. Cuando todos los clientes tengan una versión
+que confíe en la nueva, se retira la antigua. La CI comprueba antes de
+publicar que la firma verifica con las claves compiladas en la app.
+
+Opcional y recomendable: exigir aprobación manual en el environment
+`release` (*Settings → Environments → release → Required reviewers*) para
+que ninguna release se publique sin que alguien la apruebe.
 
 ### Actualizar a una versión nueva de RustDesk
 
