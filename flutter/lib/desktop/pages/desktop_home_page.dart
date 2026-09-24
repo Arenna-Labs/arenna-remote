@@ -435,7 +435,7 @@ class _DesktopHomePageState extends State<DesktopHomePage>
       String btnText = isToUpdate ? 'Update' : 'Download';
       GestureTapCallback onPressed = () async {
         final Uri url = Uri.parse(
-            'https://github.com/Arenna-Labs/arenna_support_app/releases/latest');
+            'https://github.com/Arenna-Labs/arenna-remote/releases/latest');
         await launchUrl(url);
       };
       if (isToUpdate) {
@@ -451,7 +451,7 @@ class _DesktopHomePageState extends State<DesktopHomePage>
           closeButton: true,
           help: isToUpdate ? 'Changelog' : null,
           link: isToUpdate
-              ? 'https://github.com/Arenna-Labs/arenna_support_app/releases/tag/${bind.mainGetNewVersion()}'
+              ? 'https://github.com/Arenna-Labs/arenna-remote/releases/tag/${bind.mainGetNewVersion()}'
               : null);
     }
     if (systemError.isNotEmpty) {

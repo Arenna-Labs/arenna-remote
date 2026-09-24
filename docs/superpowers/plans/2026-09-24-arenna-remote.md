@@ -14,7 +14,7 @@
 
 - `APP_NAME` = `ArennaRemote` (sin espacios). Nombre visible = `Arenna Remote`.
 - Organización visible: `Arenna Labs S.L.`, web `https://arennalabs.com`.
-- Repo de releases: `Arenna-Labs/arenna_support_app`; tags `vX.Y.Z`.
+- Repo de releases: `Arenna-Labs/arenna-remote`; tags `vX.Y.Z`.
 - `crate::VERSION` permanece `1.4.9` (versión de protocolo). Versión de producto = `ARENNA_VERSION` (env de compilación, por defecto `0.0.0`).
 - Servidor por defecto `rustdesk.arenna38.com`, clave pública leída del `id_ed25519.pub` de la VPS.
 - Android `applicationId` y paquete Kotlin: `com.arennalabs.remote`; esquema URI `arennaremote`.
@@ -109,7 +109,7 @@ mod tests {
   - `fn version_from_release_url(url: &str) -> Option<String>` (`.../releases/tag/v1.2.3` → `Some("1.2.3")`; cualquier otra URL → `None`).
   - `fn is_newer(candidate: &str, current: &str) -> bool` (usa `get_version_number`).
   - `fn windows_asset_name(version: &str, arch: &str) -> String` → `arenna-remote-{version}-{arch}.exe`.
-  - `fn release_download_url(version: &str, asset: &str) -> String` → `https://github.com/Arenna-Labs/arenna_support_app/releases/download/v{version}/{asset}`.
+  - `fn release_download_url(version: &str, asset: &str) -> String` → `https://github.com/Arenna-Labs/arenna-remote/releases/download/v{version}/{asset}`.
   - `fn verify_update_signature(data: &[u8], sig_b64: &str, pk_b64: &str) -> ResultType<()>`.
 
 - [ ] Step 1: Tests que fallan:
@@ -117,7 +117,7 @@ mod tests {
 ```rust
 #[test]
 fn parses_release_tag_urls() {
-    let base = "https://github.com/Arenna-Labs/arenna_support_app/releases";
+    let base = "https://github.com/Arenna-Labs/arenna-remote/releases";
     assert_eq!(version_from_release_url(&format!("{base}/tag/v1.2.3")), Some("1.2.3".into()));
     assert_eq!(version_from_release_url(&format!("{base}/tag/V2.0.0")), Some("2.0.0".into()));
     assert_eq!(version_from_release_url(&format!("{base}/tag/1.0.1")), Some("1.0.1".into()));
@@ -138,7 +138,7 @@ fn builds_asset_names_and_urls() {
     assert_eq!(windows_asset_name("1.2.3", "x86_64"), "arenna-remote-1.2.3-x86_64.exe");
     assert_eq!(
         release_download_url("1.2.3", "arenna-remote-1.2.3-x86_64.exe"),
-        "https://github.com/Arenna-Labs/arenna_support_app/releases/download/v1.2.3/arenna-remote-1.2.3-x86_64.exe"
+        "https://github.com/Arenna-Labs/arenna-remote/releases/download/v1.2.3/arenna-remote-1.2.3-x86_64.exe"
     );
 }
 #[test]
@@ -196,7 +196,7 @@ fn verifies_signatures() {
 - Consumes: funciones de Task 2.
 - Produces: `crate::arenna::fetch_latest_release_url() -> ResultType<String>` (async), `crate::arenna::verify_downloaded_update(path: &Path, download_url: &str) -> ResultType<()>`.
 
-- [ ] Step 1: `do_check_software_update` → GET a `https://github.com/Arenna-Labs/arenna_support_app/releases/latest` (sigue redirecciones, `User-Agent: ArennaRemote/<ver>`), `version_from_release_url(resp.url())`, `is_newer(v, PRODUCT_VERSION)`; guarda en `SOFTWARE_UPDATE_URL` la URL `.../releases/tag/vX.Y.Z` (forma upstream). Errores → `Err` (se registran) y nunca panic.
+- [ ] Step 1: `do_check_software_update` → GET a `https://github.com/Arenna-Labs/arenna-remote/releases/latest` (sigue redirecciones, `User-Agent: ArennaRemote/<ver>`), `version_from_release_url(resp.url())`, `is_newer(v, PRODUCT_VERSION)`; guarda en `SOFTWARE_UPDATE_URL` la URL `.../releases/tag/vX.Y.Z` (forma upstream). Errores → `Err` (se registran) y nunca panic.
 - [ ] Step 2: quitar el early-return de custom client en `check_software_update`.
 - [ ] Step 3: `updater.rs`: URL de descarga = `release_download_url(v, windows_asset_name(v, arch))`; nunca MSI; tras descargar, `verify_downloaded_update` (descarga `<url>.sig`, verifica; si falla borra y `bail!`).
 - [ ] Step 4: FFI `download-file-<ver>` → `windows_asset_name`; `update-me` verifica firma antes de `update_to`.

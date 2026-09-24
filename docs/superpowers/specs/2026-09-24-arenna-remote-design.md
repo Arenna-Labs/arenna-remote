@@ -8,7 +8,7 @@ Sustituir el script PowerShell que "maquillaba" una instalación oficial de
 RustDesk por un **producto propio**: un fork de RustDesk 1.4.9 rebrandeado
 como **Arenna Remote** (Arenna Labs S.L.), que se conecta por defecto al
 servidor propio de la empresa y se actualiza desde las GitHub Releases de
-`Arenna-Labs/arenna_support_app`.
+`Arenna-Labs/arenna-remote`.
 
 ### Lo que dijo el usuario
 - Rebranding completo, "incluso a nivel de código".
@@ -135,7 +135,7 @@ poder convivir y nunca tocarlo:
   `ARENNA_VERSION` se inyecta en compilación desde el tag (`vX.Y.Z` →
   `X.Y.Z`); en builds locales vale `0.0.0`.
 - **Comprobación**: petición a
-  `https://github.com/Arenna-Labs/arenna_support_app/releases/latest`
+  `https://github.com/Arenna-Labs/arenna-remote/releases/latest`
   siguiendo la redirección hasta `/releases/tag/vX.Y.Z` (sin API → sin límite
   de 60 req/h, sin JSON). Se compara con `ARENNA_VERSION`.
 - **Asset Windows**: `arenna-remote-X.Y.Z-x86_64.exe` (instalador

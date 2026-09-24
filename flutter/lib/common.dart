@@ -4204,7 +4204,7 @@ String get appDisplayName {
 
 // AGPL-3.0 "Appropriate Legal Notices" shown in the About pages.
 const String kArennaSourceCodeUrl =
-    'https://github.com/Arenna-Labs/arenna_support_app';
+    'https://github.com/Arenna-Labs/arenna-remote';
 const String kUpstreamLegalNotice =
     'Basado en RustDesk — Copyright © Purslane Tech Pte. Ltd. — Licencia AGPL-3.0';
 

@@ -125,7 +125,7 @@ class _ConnectionPageState extends State<ConnectionPage> {
         : InkWell(
             onTap: () async {
               final url =
-                  'https://github.com/Arenna-Labs/arenna_support_app/releases/latest';
+                  'https://github.com/Arenna-Labs/arenna-remote/releases/latest';
               // https://pub.dev/packages/url_launcher#configuration
               // https://developer.android.com/training/package-visibility/use-cases#open-urls-custom-tabs
               //

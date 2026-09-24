@@ -7,14 +7,14 @@
 versión propia y rebrandeada de [RustDesk](https://github.com/rustdesk/rustdesk)
 que se conecta a nuestro servidor (`rustdesk.arenna38.com`) sin ninguna
 configuración y se actualiza desde las
-[releases de este repositorio](https://github.com/Arenna-Labs/arenna_support_app/releases).
+[releases de este repositorio](https://github.com/Arenna-Labs/arenna-remote/releases).
 
 | Plataforma | Descarga |
 |---|---|
 | Windows 10/11 x64 | `arenna-remote-X.Y.Z-x86_64.exe` |
 | Android 5.1+ | `arenna-remote-X.Y.Z-universal.apk` (o el APK de tu arquitectura) |
 
-➡️ **[Última versión](https://github.com/Arenna-Labs/arenna_support_app/releases/latest)**
+➡️ **[Última versión](https://github.com/Arenna-Labs/arenna-remote/releases/latest)**
 
 ---
 

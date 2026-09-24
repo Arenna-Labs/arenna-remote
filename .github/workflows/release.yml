@@ -1,7 +1,7 @@
 # Builds Arenna Remote for Windows x64 and Android.
 #
 # - Push a tag `vX.Y.Z` -> build, sign and publish a GitHub Release. Clients
-#   check https://github.com/Arenna-Labs/arenna_support_app/releases/latest
+#   check https://github.com/Arenna-Labs/arenna-remote/releases/latest
 #   for updates, so publishing a release rolls it out.
 # - Run manually (workflow_dispatch) or push to a feat/** branch -> same
 #   build, artifacts only (unsigned installer, debug-signed APKs).

@@ -14,7 +14,7 @@ pub const DISPLAY_NAME: &str = "Arenna Remote";
 pub const COMPANY: &str = "Arenna Labs S.L.";
 pub const WEBSITE: &str = "https://arennalabs.com";
 /// GitHub repository whose releases are the update channel.
-pub const RELEASES_REPO: &str = "Arenna-Labs/arenna_support_app";
+pub const RELEASES_REPO: &str = "Arenna-Labs/arenna-remote";
 
 /// Self-hosted rustdesk-server (hbbs/hbbr) used by default.
 pub const SERVER_HOST: &str = "rustdesk.arenna38.com";
@@ -222,7 +222,7 @@ mod tests {
 
     #[test]
     fn parses_release_tag_urls() {
-        let base = "https://github.com/Arenna-Labs/arenna_support_app/releases";
+        let base = "https://github.com/Arenna-Labs/arenna-remote/releases";
         assert_eq!(version_from_release_url(&format!("{base}/tag/v1.2.3")), Some("1.2.3".into()));
         assert_eq!(version_from_release_url(&format!("{base}/tag/V2.0.0")), Some("2.0.0".into()));
         assert_eq!(version_from_release_url(&format!("{base}/tag/1.0.1")), Some("1.0.1".into()));
@@ -258,11 +258,11 @@ mod tests {
         assert_eq!(windows_asset_name("1.2.3", "x86_64"), "arenna-remote-1.2.3-x86_64.exe");
         assert_eq!(
             release_download_url("1.2.3", "arenna-remote-1.2.3-x86_64.exe"),
-            "https://github.com/Arenna-Labs/arenna_support_app/releases/download/v1.2.3/arenna-remote-1.2.3-x86_64.exe"
+            "https://github.com/Arenna-Labs/arenna-remote/releases/download/v1.2.3/arenna-remote-1.2.3-x86_64.exe"
         );
         assert_eq!(
             release_page_url("1.2.3"),
-            "https://github.com/Arenna-Labs/arenna_support_app/releases/tag/v1.2.3"
+            "https://github.com/Arenna-Labs/arenna-remote/releases/tag/v1.2.3"
         );
         assert!(is_update_file_name("arenna-remote-1.2.3-x86_64.exe"));
         assert!(!is_update_file_name("rustdesk-1.4.9-x86_64.exe"));
