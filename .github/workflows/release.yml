@@ -3,8 +3,8 @@
 # - Push a tag `vX.Y.Z` -> build, sign and publish a GitHub Release. Clients
 #   check https://github.com/Arenna-Labs/arenna_support_app/releases/latest
 #   for updates, so publishing a release rolls it out.
-# - Run manually (workflow_dispatch) -> same build, artifacts only, nothing
-#   is published.
+# - Run manually (workflow_dispatch) or push to a feat/** branch -> same
+#   build, artifacts only, nothing is published.
 #
 # Toolchain versions mirror upstream RustDesk 1.4.9's flutter-build.yml.
 
@@ -14,6 +14,9 @@ on:
   push:
     tags:
       - "v[0-9]+.[0-9]+.[0-9]+"
+    # Test builds (artifacts only) for work-in-progress branches.
+    branches:
+      - "feat/**"
   workflow_dispatch:
     inputs:
       version:
@@ -26,7 +29,7 @@ permissions:
 
 concurrency:
   group: release-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
 
 env:
   RUST_VERSION: "1.75"
@@ -59,7 +62,7 @@ jobs:
             VERSION="${GITHUB_REF_NAME#v}"
             PUBLISH=true
           else
-            VERSION="$INPUT_VERSION"
+            VERSION="${INPUT_VERSION:-0.0.1}"
             PUBLISH=false
           fi
           if ! [[ "$VERSION" =~ ^([0-9]+)\.([0-9]{1,2})\.([0-9]{1,2})$ ]]; then
