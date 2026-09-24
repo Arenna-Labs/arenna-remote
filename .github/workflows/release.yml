@@ -539,4 +539,13 @@ jobs:
           # the release once every asset is in place.
           gh release create "v${VERSION}" --draft --title "Arenna Remote ${VERSION}" --notes-file ../notes.md --verify-tag
           gh release upload "v${VERSION}" ./*.exe ./*.sig ./*.apk SHA256SUMS.txt --clobber
-          gh release edit "v${VERSION}" --draft=false --latest
+          # Only become "latest" (what clients update to) if no newer release
+          # is already published, e.g. when a hotfix for an older line lands.
+          CURRENT=$(gh release view --json tagName --jq .tagName 2>/dev/null || true)
+          HIGHEST=$(printf '%s\n%s\n' "${CURRENT#v}" "$VERSION" | sort -V | tail -n 1)
+          if [ -z "$CURRENT" ] || [ "$HIGHEST" = "$VERSION" ]; then
+            gh release edit "v${VERSION}" --draft=false --latest
+          else
+            echo "::warning::v${VERSION} is older than ${CURRENT}; published without becoming latest"
+            gh release edit "v${VERSION}" --draft=false --latest=false
+          fi
