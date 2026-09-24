@@ -397,11 +397,14 @@ jobs:
           mkdir -p ./flutter/android/app/src/main/jniLibs
           cp -r ./jnilib/* ./flutter/android/app/src/main/jniLibs/
           pushd flutter
-          flutter build apk --release --target-platform ${{ matrix.job.platform }} --split-per-abi \
+          # No --split-per-abi: Flutter would add ABI*1000 to the versionCode,
+          # and a per-ABI install could then never be updated with the
+          # universal APK (or vice versa). jniLibs only holds this ABI anyway.
+          flutter build apk --release --target-platform ${{ matrix.job.platform }} \
             --build-name "$ARENNA_VERSION" --build-number "$VERSION_CODE"
           popd
           mkdir -p dist
-          mv ./flutter/build/app/outputs/flutter-apk/app-${{ matrix.job.abi }}-release.apk "./dist/${ASSET_PREFIX}-${ARENNA_VERSION}-${{ matrix.job.arch }}.apk"
+          mv ./flutter/build/app/outputs/flutter-apk/app-release.apk "./dist/${ASSET_PREFIX}-${ARENNA_VERSION}-${{ matrix.job.arch }}.apk"
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
