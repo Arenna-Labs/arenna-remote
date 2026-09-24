@@ -1004,6 +1004,13 @@ pub fn get_app_name() -> String {
     hbb_common::config::APP_NAME.read().unwrap().clone()
 }
 
+/// Name shown to people ("Arenna Remote"). `get_app_name()` is the internal
+/// identifier used for paths, the Windows service, IPC and the URI scheme.
+#[inline]
+pub fn get_app_display_name() -> String {
+    hbb_common::arenna::DISPLAY_NAME.to_owned()
+}
+
 #[inline]
 pub fn is_rustdesk() -> bool {
     hbb_common::config::APP_NAME.read().unwrap().eq("RustDesk")
@@ -1080,7 +1087,9 @@ fn get_api_server_(api: String, custom: String) -> String {
             return format!("http://{}", s);
         }
     }
-    "https://admin.rustdesk.com".to_owned()
+    // Arenna Remote: the self-hosted OSS server has no API server; never fall
+    // back to RustDesk's.
+    "".to_owned()
 }
 
 #[inline]
@@ -2279,9 +2288,13 @@ pub fn get_builtin_option(key: &str) -> String {
         .unwrap_or_default()
 }
 
+/// Upstream treats every build not named "RustDesk" as a RustDesk "custom
+/// client" (configured by a custom.txt signed by RustDesk), which disables
+/// the update check and changes defaults. Arenna Remote is a first-party
+/// product with its own update channel, so it never is one.
 #[inline]
 pub fn is_custom_client() -> bool {
-    get_app_name() != "RustDesk"
+    false
 }
 
 pub fn verify_login(_raw: &str, _id: &str) -> bool {
