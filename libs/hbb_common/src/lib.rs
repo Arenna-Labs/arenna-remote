@@ -26,6 +26,7 @@ pub use log;
 pub mod bytes_codec;
 pub use anyhow::{self, bail};
 pub use futures_util;
+pub mod arenna;
 pub mod config;
 pub mod fs;
 pub mod mem;
