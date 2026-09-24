@@ -19,7 +19,7 @@ pub const RELEASES_REPO: &str = "Arenna-Labs/arenna_support_app";
 /// Self-hosted rustdesk-server (hbbs/hbbr) used by default.
 pub const SERVER_HOST: &str = "rustdesk.arenna38.com";
 /// Base64 of the server's `id_ed25519.pub`.
-pub const SERVER_PUBLIC_KEY: &str = "t4yov1rUxoLGLbxyT7CgDaIEqfqIRMBWFBdLIMBaTJE=";
+pub const SERVER_PUBLIC_KEY: &str = "7c6bMZlmhqyWFvA3sFQDtQKQr29M+Z2CsjbYMLJdQ8g=";
 
 /// Ed25519 public key that verifies the `.sig` of every Windows update.
 /// The private half is the `UPDATE_SIGNING_KEY` GitHub Actions secret.
@@ -154,6 +154,14 @@ mod tests {
     fn default_server_is_the_arenna_server() {
         assert_eq!(crate::config::RENDEZVOUS_SERVERS, &["rustdesk.arenna38.com"]);
         assert_eq!(crate::config::RS_PUB_KEY, SERVER_PUBLIC_KEY);
+    }
+
+    #[test]
+    fn server_public_key_is_the_production_hbbs_key() {
+        // /opt/rustdesk-server/data/id_ed25519.pub on rustdesk.arenna38.com
+        assert_eq!(SERVER_PUBLIC_KEY, "7c6bMZlmhqyWFvA3sFQDtQKQr29M+Z2CsjbYMLJdQ8g=");
+        let raw = sodiumoxide::base64::decode(SERVER_PUBLIC_KEY, sodiumoxide::base64::Variant::Original).unwrap();
+        assert!(sodiumoxide::crypto::sign::PublicKey::from_slice(&raw).is_some());
     }
 
     #[test]
